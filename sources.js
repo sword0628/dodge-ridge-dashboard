@@ -210,15 +210,32 @@ function localInstant(date, time, timezone = 'America/Los_Angeles') {
   return iso(guess - minutes * 60000);
 }
 
-function inDirection(segment, eventDirection) {
-  const direction = String(segment.direction ?? '').trim().toLowerCase();
-  if (!direction || !eventDirection) return true;
-  return String(eventDirection).split(/[\s/,&]+/).some(part => part.toLowerCase().startsWith(direction[0]));
+const cardinal = {
+  n: 'N', nb: 'N', north: 'N', northbound: 'N',
+  s: 'S', sb: 'S', south: 'S', southbound: 'S',
+  e: 'E', eb: 'E', east: 'E', eastbound: 'E',
+  w: 'W', wb: 'W', west: 'W', westbound: 'W',
+};
+
+function directions(value) {
+  const text = String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
+    .replace(/\b([nsew])\s*[/.-]\s*b\b/g, '$1b')
+    .replace(/\b(north|south|east|west)[ -]+bound\b/g, '$1bound');
+  if (!text || /^n\s*\/\s*a$/.test(text)) return null;
+  if (/^(?:(?:both|all)(?: directions?| ways?)?|bi-?directional|b)$/.test(text)) return ['N', 'S', 'E', 'W'];
+  const codes = text.split(/\s*(?:[/,&;]|\band\b)\s*/).filter(word => Object.hasOwn(cardinal, word)).map(word => cardinal[word]);
+  return codes.length ? codes : null;
 }
 
 function matchedDirection(segment, route, direction) {
-  const primary = sameRoad(segment.highway,route) && inDirection(segment,direction);
-  return {primary, relevant:primary || (segment.aliases??[]).some(alias=>sameRoad(alias.highway,route)&&inDirection(alias,direction))};
+  const reported = directions(direction);
+  const matches = item => {
+    const expected = directions(item.direction);
+    return sameRoad(item.highway, route) && (!reported || !expected || reported.some(code => expected.includes(code)));
+  };
+  const ownRoad = matches(segment);
+  // Without an official direction, require a geographically matched point instead of matching by postmile alone.
+  return {primary: ownRoad && !!reported, relevant: ownRoad || (segment.aliases ?? []).some(matches)};
 }
 
 function officialRoadNotice(route) {
@@ -241,8 +258,8 @@ function caltransChecks(segment, items, line, sourceUrl) {
     if (!match.relevant) return [];
     const p = point(l.latitude, l.longitude);
     if (!nearLine(p,line) && !(match.primary && withinPostmiles(segment,l.county,l.postmile))) return [];
-    const level = s.status;
-    const kind = level === 'RC' ? 'closure' : /^(?:R-[123]M?|ESC|HT|MAX|MIN|TH|TS|TTA|TTS|TTSD|VM)$/.test(level) ? 'restriction' : 'advisory';
+    const level = String(s.status ?? '').trim().replace(/\s+/g, ' ').toUpperCase();
+    const kind = level === 'RC' || level === 'ROAD CLOSED' ? 'closure' : /^(?:R-[123]M?|ESC|HT|MAX|MIN|TH|TS|TTA|TTS|TTSD|VM)$/.test(level) ? 'restriction' : 'advisory';
     if (!level || level === 'R-0') return [];
     return [{id: `cc-${row.index}`, kind, title: l.locationName || l.nearbyPlace || segment.highway, description: s.statusDescription || '',
       level, start: segment.start, end: segment.end, ...p, direction: l.direction, active: true, source: 'Caltrans QuickMap · CC', sourceUrl,
@@ -283,7 +300,8 @@ function caltransCameras(segment, items, line, sourceUrl) {
     const loc = row?.location;
     const url = row?.imageData?.static?.currentImageURL;
     if (!loc || !cameraUrlAllowed(url)) return [];
-    const match = matchedDirection(segment,loc.route,loc.direction);
+    const direction = /^median$/i.test(loc.direction?.trim()) ? 'both' : loc.direction;
+    const match = matchedDirection(segment,loc.route,direction);
     if (!match.relevant) return [];
     const p = point(loc.latitude, loc.longitude);
     if (!nearLine(p,line) && !(match.primary && withinPostmiles(segment,loc.county,loc.postmile))) return [];
@@ -311,8 +329,9 @@ function chpEvents(segment, feed, line) {
     const html = kmlField(body, 'description');
     const title = xmlText(/<h2\b[^>]*>([\s\S]*?)<\/h2>/i.exec(html)?.[1] ?? kmlField(body, 'name'));
     const location = xmlText(/<p class="iw-text">([\s\S]*?)<\/p>/i.exec(html)?.[1] ?? '');
-    const roadRefs = `${title} ${location}`.match(/\b(?:I|US|SR|HWY|INTERSTATE|HIGHWAY|ROUTE)[\s-]*\d{1,4}(?:[NSEW])?\b/ig) ?? [];
-    if (!roadRefs.some(ref => matchedDirection(segment,ref,null).relevant)) return [];
+    const roadPattern = /\b((?:I|US|SR|CA|HWY|INTERSTATE|HIGHWAY|ROUTE)[\s-]*\d{1,4})(?:\s*((?:NORTH|SOUTH|EAST|WEST)(?:[ -]?BOUND)?|[NSEW](?:[\/.-]?B)?)\b(?!\s*(?:\/\s*O\b|\bOF\b)))?\b/i;
+    const road = roadPattern.exec(location) ?? roadPattern.exec(title);
+    if (!road || !matchedDirection(segment,road[1],road[2]).relevant) return [];
     const style = kmlField(body, 'styleUrl');
     const officialClosure = style === '#full-closure';
     const incidentId = /CHP Incident\s+([0-9A-Z]+)/i.exec(html)?.[1];
@@ -321,7 +340,7 @@ function chpEvents(segment, feed, line) {
     const hour = stamp && Number(stamp[4]) % 12 + (stamp[6].toLowerCase() === 'p' ? 12 : 0);
     const updatedAt = stamp && localInstant(`${stamp[3]}-${pad(stamp[1])}-${pad(stamp[2])}`, `${pad(hour)}:${stamp[5]}:00`);
     return [{id: incidentId ? `chp-${incidentId}` : `chp-${lat}-${lon}-${title || index}`, kind: officialClosure ? 'closure' : 'accident',
-      title: title || 'CHP 事件', description: location, ...p, start: segment.start, end: segment.end, active: true,
+      title: title || 'CHP 事件', description: location, ...p, start: segment.start, end: segment.end, direction: road[2], active: true,
       updatedAt: updatedAt ?? feed.fetchedAt, timestampKind: updatedAt ? 'source-reported' : 'feed-retrieved', source: 'CHP · Caltrans QuickMap', sourceUrl: QUICKMAP}];
   });
 }
@@ -397,8 +416,7 @@ async function caltransSegment(segment, request, chp) {
     updatedAt: reports.map(report => report?.fetchedAt).filter(Boolean).sort().at(-1) ?? null};
 }
 
-export async function roads(route) {
-  const cache = new Map();
+export async function roads(route, cache = new Map()) {
   const request = url => {
     if (!cache.has(url)) cache.set(url, fetchJson(url));
     return cache.get(url);

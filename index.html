@@ -38,6 +38,7 @@
       <nav class="section-nav" aria-label="导航" id="sectionNav">
         <a href="#verdict" data-zh="出发判决" data-en="Departure">出发判决</a>
         <a href="#roads" data-zh="去程路况" data-en="Outbound roads">去程路况</a>
+        <a href="#return-roads" data-zh="回程路况" data-en="Return roads">回程路况</a>
         <a href="#weather" data-zh="天气与降雪" data-en="Weather &amp; snow">天气与降雪</a>
       </nav>
     </aside>
@@ -47,6 +48,7 @@
         <p>正在读取公开路况与预报…</p>
       </section>
       <section id="roads" class="section" aria-label="去程路况" tabindex="-1"></section>
+      <section id="return-roads" class="section" aria-label="回程路况" tabindex="-1" hidden></section>
       <section id="weather" class="section" aria-label="天气与降雪" tabindex="-1"></section>
       <footer class="panel"><p class="muted source-line" id="sourceCredit"></p></footer>
     </main>
@@ -59,6 +61,6 @@
     <div id="forecastBody" class="dialog-body"></div>
   </dialog>
   <noscript><p class="noscript">此看板需要 JavaScript。<a href="https://quickmap.dot.ca.gov/">查看 Caltrans QuickMap</a>。</p></noscript>
-  <script type="module" src="./app.js?v=3"></script>
+  <script type="module" src="./app.js?v=4"></script>
 </body>
 </html>

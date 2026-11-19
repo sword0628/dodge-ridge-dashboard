@@ -1,12 +1,14 @@
 import {profile,points} from './itinerary.js';
+import {reverseSegments} from './return-route.js';
 import {routeTowns} from './route-towns.js';
-import {weather,roads,routeWeather,townsWeather} from './sources.js';
+import {weather,roads,routeWeather,townsWeather} from './sources.js?v=4';
 import {MIN,HOUR,fresh,tripVerdict} from './logic.js';
 
 const localKey='dodge-ridge-public-snapshots-v2';
 const route={segments:profile.segments,timeZone:profile.timeZone};
+const returnRoute={segments:reverseSegments(route.segments),timeZone:route.timeZone};
 const places=routeTowns(route.segments,points.base);
-const kinds={base:'weather',summit:'weather',roads:'roads',routeWeather:'routeWeather',towns:'towns'};
+const kinds={base:'weather',summit:'weather',roads:'roads',returnRoads:'roads',routeWeather:'routeWeather',towns:'towns'};
 let snapshots={};
 try {
   const cached=JSON.parse(localStorage.getItem(localKey)??'{}');
@@ -25,8 +27,8 @@ function cameraPage(c){
   return `https://quickmap.dot.ca.gov/?${query}`;
 }
 
-async function publicRoads(){
-  const result=await roads(route);
+async function publicRoads(roadRoute, feedCache){
+  const result=await roads(roadRoute,feedCache);
   if(result.segments.every(p=>p.status==='unavailable'))throw new Error('Caltrans 暂不可用。');
   return {...result,segments:result.segments.map(p=>({...p,cameras:p.cameras.map(({url,...c})=>({...c,officialUrl:cameraPage(c)}))}))};
 }
@@ -43,13 +45,20 @@ async function forecastRoute(){
   return result;
 }
 
-const loaders={base:()=>weather(points.base),summit:()=>weather(points.summit),roads:publicRoads,routeWeather:forecastRoute,towns:forecastTowns};
+const loaders={
+  base:()=>weather(points.base),
+  summit:()=>weather(points.summit),
+  roads:feedCache=>publicRoads(route,feedCache),
+  returnRoads:feedCache=>publicRoads(returnRoute,feedCache),
+  routeWeather:forecastRoute,
+  towns:forecastTowns,
+};
 
-async function update(key,now){
+async function update(key,now,feedCache){
   const previous=snapshots[key];
   if(now<Date.parse(previous?.retryAt))return false;
   try {
-    const data=await loaders[key]();
+    const data=await loaders[key](feedCache);
     snapshots[key]={savedAt:new Date().toISOString(),data};
     return true;
   } catch(error){
@@ -62,13 +71,15 @@ async function update(key,now){
 
 export function loadDashboard(){
   const road=view('roads');
+  const returnRoad=view('returnRoads');
   const routeForecast=view('routeWeather');
   const forecasts=view('towns');
   const base=view('base');
   const summit=view('summit');
-  const updatedAt=[road,routeForecast,forecasts,base,summit].map(v=>v?.savedAt).filter(Boolean).sort().at(-1);
-  const partial=Boolean(updatedAt)&&(!road?.data||road.stale||road.data.segments.some(s=>s.status!=='ok')||![base,summit,forecasts].every(v=>v?.data&&!v.stale));
-  return {profile,roads:road,routeWeather:routeForecast,routeTowns:{...forecasts,places},weather:{base,summit},
+  const updatedAt=[road,returnRoad,routeForecast,forecasts,base,summit].map(v=>v?.savedAt).filter(Boolean).sort().at(-1);
+  const roadsReady=[road,returnRoad].every(snapshot=>snapshot?.data&&!snapshot.stale&&snapshot.data.segments.every(segment=>segment.status==='ok'));
+  const partial=Boolean(updatedAt)&&(!roadsReady||![base,summit,forecasts].every(v=>v?.data&&!v.stale));
+  return {profile,roads:road,returnRoads:returnRoad,routeWeather:routeForecast,routeTowns:{...forecasts,places},weather:{base,summit},
     verdict:tripVerdict(profile,road,routeForecast),
     refreshStatus:{status:updatedAt?partial?'partial':'live':'unavailable',partial,updatedAt}};
 }
@@ -77,7 +88,8 @@ export function refreshDashboard(){
   if(activeRefresh)return activeRefresh;
   activeRefresh=(async()=>{
     const now=Date.now();
-    const done=await Promise.all(Object.keys(loaders).map(key=>update(key,now)));
+    const feedCache=new Map();
+    const done=await Promise.all(Object.keys(loaders).map(key=>update(key,now,feedCache)));
     try{localStorage.setItem(localKey,JSON.stringify(snapshots));}catch{}
     const dashboard=loadDashboard();
     if(!done.some(Boolean)&&dashboard.refreshStatus.updatedAt)dashboard.refreshStatus.status='cached';
