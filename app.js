@@ -1,7 +1,8 @@
 import {loadDashboard, refreshDashboard} from './page-data.js';
 import {bestSnow, dateKey, localDays, quant, valid} from './forecast.js';
 import {renderRouteTowns} from './route-towns-view.js';
-import {bindRoadMap, roadMap} from './road-map.js';
+import {bindRoadMap, roadMap} from './road-map.js?v=3';
+import {roadDirection, roadEventText, roadLocation, roadSource} from './road-locale.js';
 
 const $ = id => document.getElementById(id);
 const h = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -73,15 +74,20 @@ const eventIsActive = event => {
   return event.active !== false && (!Number.isFinite(starts) || starts <= Date.now()) && (!Number.isFinite(ends) || ends > Date.now());
 };
 function eventRow(event, includeDescription=false) {
-  const source = event.source ? link(event.source,event.sourceUrl) : '';
+  const {title,description,direction} = roadEventText(event,language);
+  const source = event.source ? link(roadSource(event.source,language),event.sourceUrl) : '';
   const lastChange = timeLabel(event.updatedAt);
   const checked = timeLabel(event.verifiedAt ?? event.checkedAt);
   const parts = [source,lastChange ? `${event.timestampKind==='feed-retrieved' ? tr('来源抓取','Source retrieved') : tr('来源更新','Source updated')} ${lastChange}` : '',
     checked && checked !== lastChange ? `${tr('核对','Checked')} ${checked}` : '',
     event.noticeUrl ? link(tr('Caltrans 官方原文','Original Caltrans notice'),event.noticeUrl) : '',
     event.checkpointUrl ? link(tr('QuickMap 检查点','QuickMap checkpoint'),event.checkpointUrl) : ''].filter(Boolean);
-  const label = [eventKinds()[event.kind],event.highway,event.title,event.level].filter(Boolean).join(' · ');
-  return `<li class="road-event ${event.kind==='closure'?'road-closure':''}"><strong>${h(label)}${valid(event.snowfall)?` · ${amount(event.snowfall,'snow')}`:''}</strong>${includeDescription && event.description && event.description !== event.title ? `<p>${h(event.description)}</p>` : ''}${parts.length?`<small>${parts.join(' · ')}</small>`:''}</li>`;
+  const label = [eventKinds()[event.kind],event.highway,title,event.level,direction].filter(Boolean).join(' · ');
+  const hasDescription = description && description !== title;
+  const originalOnly = language === 'zh' && hasDescription && description === event.description && /[a-z]/i.test(description) && !/\p{Script=Han}/u.test(description);
+  const original = language === 'zh' && includeDescription && (originalOnly || title !== (event.title ?? '') || description !== (event.description ?? '') || direction !== (event.direction ?? ''))
+    ? `<details><summary>查看英文原文</summary><p lang="en">${h([event.title,event.direction,event.description === event.title ? '' : event.description].filter(Boolean).join(' · '))}</p></details>` : '';
+  return `<li class="road-event ${event.kind==='closure'?'road-closure':''}"><strong>${h(label)}${valid(event.snowfall)?` · ${amount(event.snowfall,'snow')}`:''}</strong>${includeDescription && hasDescription && !originalOnly ? `<p>${h(description)}</p>` : ''}${original}${parts.length?`<small>${parts.join(' · ')}</small>`:''}</li>`;
 }
 
 function renderHeader() {
@@ -123,6 +129,7 @@ function renderVerdict() {
   const gaps = [];
   if (roadStale) gaps.push(tr('路况快照已过期，出门前请刷新并核对官方通报。','The road snapshot is stale. Refresh and check official notices before leaving.'));
   if (roadsMissing) gaps.push(tr('实时路况暂无数据。','Live road conditions are unavailable.'));
+  const districts=(verdict?.chainDistricts??[]).join(', ');
   const knownGaps = {
     roads:tr('部分去程路况来源尚未核实。','Some outbound road sources remain unverified.'),
     roadsMissing:tr('实时路况暂无数据。','Live road conditions are unavailable.'),
@@ -130,6 +137,8 @@ function renderVerdict() {
     roadsCoverage:tr('部分路况来源暂无覆盖。','Some road sources have incomplete coverage.'),
     roadsFetch:tr('部分路况来源未能刷新。','Some road sources did not refresh.'),
     roadCoverage:tr('部分路况来源暂无覆盖。','Some road sources have incomplete coverage.'),
+    roadChainNotPublished:tr(`Caltrans 第 ${districts} 区未发布链条检查点数据。`,`Caltrans district ${districts} does not publish chain-checkpoint data.`),
+    roadsPartial:tr('部分路况来源未能核对，详情见路况板块。','Some road sources could not be checked. See the road conditions section.'),
     routeWeather:tr('沿途天气来自抽样点，公路其余区间的天气可能不同。','Weather is sampled at points along the route. Conditions between them may differ.'),
     routeScope:tr('去程覆盖主干公路。','Monitoring covers outbound main highways.'),
   };
@@ -144,9 +153,33 @@ function roadNotice(highway) {
   return number ? link(tr('公路全线官方通报','Official full-highway bulletin'),`${stateRoute}${Number(number)}`) : '';
 }
 
-const segmentName = segment => [segment.highway,[segment.start,segment.end].filter(Boolean).join(' → ')].filter(Boolean).join(' · ');
+const segmentName = segment => [segment.highway,[segment.start,segment.end].filter(Boolean).map(value=>roadLocation(value,language)).join(' → ')].filter(Boolean).join(' · ');
 function cameraLink(camera) {
-  return link(camera.title || tr('沿途摄像头','Road camera'),camera.officialUrl || `${quickMap}?layers=cctv`);
+  return link(roadLocation(camera.title,language) || tr('沿途摄像头','Road camera'),camera.officialUrl || `${quickMap}?layers=cctv`);
+}
+
+function chainSummary(segments,snapshot,current) {
+  const heading=`<h3>${tr('链条管制','Traction controls')}</h3>`;
+  if(!snapshot?.data) return `<div class="panel" id="roadChainSummary">${heading}${empty(tr('点右上角「刷新」获取链条检查点。','Tap Refresh to load chain checkpoints.'))}</div>`;
+  const districts=[...new Set(segments.filter(s=>s.coverage?.chainControls==='notPublished').map(s=>s.district).filter(Boolean))].join(', ');
+  const groups=new Map();
+  for(const s of segments) for(const event of s.events??[]) {
+    if(event.kind!=='restriction'||!eventIsActive(event))continue;
+    const key=JSON.stringify([s.highway,event.level,event.direction,event.noticeUrl]);
+    const group=groups.get(key)??{highway:s.highway,level:event.level,direction:event.direction,notice:event.noticeUrl,checkpoints:new Map()};
+    group.checkpoints.set(event.recordId??event.id??`${event.lat},${event.lon}`,event);
+    groups.set(key,group);
+  }
+  const checks=[...groups.values()].map(({highway,level,direction,notice,checkpoints})=>{
+    const count=checkpoints.size;
+    const title=[highway,level,roadDirection(direction,language),tr(`${count} 个检查点`,`${count} checkpoint${count===1?'':'s'}`)].filter(Boolean).join(' · ');
+    return `<details><summary>${h(title)}</summary>${notice?`<p>${link(tr('查看这条公路的 Caltrans 通报','Read the Caltrans highway bulletin'),notice)}</p>`:''}<div class="restriction-scroll" tabindex="0" role="region" aria-label="${tr('管制检查点','Traction checkpoints')}"><ul class="road-events">${[...checkpoints.values()].map(event=>eventRow({...event,noticeUrl:null},true)).join('')}</ul></div></details>`;
+  }).join('');
+  const available=segments.some(s=>s.coverage?.chainControls==='available');
+  const gap=segments.some(s=>s.coverage?.chainControls==='unavailable'||!s.coverage);
+  const noMatches=available?tr('已抓取的检查点中，未查到路线内的管制。','No restrictions were found in the fetched checkpoints along the route.'):
+    tr('本次没有可显示的链条检查点记录。','No checkpoint records are available for this refresh.');
+  return `<div class="panel" id="roadChainSummary">${heading}${!current?stamps(snapshot,.75):''}${checks||`<p>${h(noMatches)}</p>`}${districts?`<p class="muted source-line">${h(tr(`Caltrans 第 ${districts} 区没有发布公开链条检查点数据。`,`Caltrans does not publish a public chain-checkpoint feed for district ${districts}.`))} ${link(tr('查看发布范围','Check feed coverage'),'https://cwwp2.dot.ca.gov/documentation/cc/cc-district-reporting-matrix.html')}</p>`:''}${gap?`<p class="muted source-line">${tr('部分区段本次未能取得检查点数据。','Some checkpoint feeds were unavailable for this refresh.')} ${link('Caltrans QuickMap',quickMap)}</p>`:''}</div>`;
 }
 
 function renderRoadCard(segment) {
@@ -182,7 +215,7 @@ function renderRoads() {
   const allChecked = current && segments.length && segments.every(segment=>segment.coverage?.closures==='available' || segment.status==='ok');
   const closureLabel = allChecked ? tr('未查到监控区间内的全封闭通报','No full closures found on the monitored segments') : mdash();
   const map = roadMap(configured,segments,language);
-  $('roads').innerHTML = `${heading(tr('去程路况','Outbound road conditions'))}<div class="panel closure-panel"><h3>${current?tr('当前封闭','Current closures'):tr('封闭通报','Closure notices')}</h3>${stamps(snapshot,.75)}${closureEvents.length?`<ul class="road-events">${closureEvents.map(event=>eventRow(event,true)).join('')}</ul>`:empty(closureLabel)}<div class="actions">${link('Caltrans QuickMap',quickMap)} ${link(tr('CHP 实时事故','CHP live incidents'),chp)} ${link(tr('CA-108 官方通报','Official CA-108 bulletin'),`${stateRoute}108`)}</div></div><div class="panel">${map}</div><div id="mapRoadCard" class="map-road-card" role="region" aria-label="${h(tr('所选路段','Selected segment'))}" hidden></div>${segments.length?`<details class="panel public-road-list"><summary>${tr('全部监控路段','All monitored segments')} <span>${segments.length}</span></summary>${segments.map(renderRoadCard).join('')}</details>`:empty(tr('暂无监控路段','No monitored segments are available'))}<div class="panel"><p>${tr('车速与拥堵','Traffic speed and congestion')} · ${h(mdash())}</p><p class="muted source-line">${tr('CA‑108 监控到 Pinecrest Lake Road 转弯口为止。Caltrans 公路通报覆盖全线。','CA‑108 monitoring ends at the Pinecrest Lake Road turnoff. Caltrans highway bulletins cover the full highway.')}</p></div>`;
+  $('roads').innerHTML = `${heading(tr('去程路况','Outbound road conditions'))}<div class="panel closure-panel"><h3>${current?tr('当前封闭','Current closures'):tr('封闭通报','Closure notices')}</h3>${stamps(snapshot,.75)}${closureEvents.length?`<ul class="road-events">${closureEvents.map(event=>eventRow(event,true)).join('')}</ul>`:empty(closureLabel)}<div class="actions">${link('Caltrans QuickMap',quickMap)} ${link(tr('CHP 实时事故','CHP live incidents'),chp)} ${link(tr('CA-108 官方通报','Official CA-108 bulletin'),`${stateRoute}108`)}</div></div>${chainSummary(segments,snapshot,current)}<div class="panel">${map}</div><div id="mapRoadCard" class="map-road-card" role="region" aria-label="${h(tr('所选路段','Selected segment'))}" hidden></div>${segments.length?`<details class="panel public-road-list"><summary>${tr('全部监控路段','All monitored segments')} <span>${segments.length}</span></summary>${segments.map(renderRoadCard).join('')}</details>`:empty(tr('暂无监控路段','No monitored segments are available'))}<div class="panel"><p>${tr('车速与拥堵','Traffic speed and congestion')} · ${h(mdash())}</p><p class="muted source-line">${tr('CA‑108 监控到 Pinecrest Lake Road 转弯口为止。Caltrans 公路通报覆盖全线。','CA‑108 monitoring ends at the Pinecrest Lake Road turnoff. Caltrans highway bulletins cover the full highway.')}</p></div>`;
   const card = $('mapRoadCard');
   const select = index => {
     selectedRoad = index;

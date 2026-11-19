@@ -1,4 +1,5 @@
 import {routeLandmarks} from './route-landmarks.js';
+import {roadEventText, roadLocation, roadSource} from './road-locale.js';
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const tileService = 'https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile';
@@ -136,7 +137,7 @@ export function roadMap(profileSegments = [], reportSegments = [], language = 'z
     const start = coordinate(segment.startLat, segment.startLon) ?? first;
     const end = coordinate(segment.endLat, segment.endLon) ?? last;
     const point = pathMidpoint(paths) ?? start ?? end;
-    const title = [segment.start,segment.end].filter(Boolean).join(' → ');
+    const title = [segment.start,segment.end].filter(Boolean).map(value=>roadLocation(value,language)).join(' → ');
     if (point && title) segmentMarkers.push({point,kind:'segment',title,highway:segment.highway,segmentIndex});
   }
 
@@ -147,7 +148,7 @@ export function roadMap(profileSegments = [], reportSegments = [], language = 'z
       if (!point || !Object.hasOwn(categories,event.kind) || event.kind === 'segment') continue;
       if (event.active === false && event.kind !== 'construction') continue;
       const key = `${event.kind}:${event.id ?? event.title}:${point.lat}:${point.lon}`;
-      if (!uniqueEvents.has(key)) uniqueEvents.set(key, {...event,point,highway:segment.highway,segmentIndex});
+      if (!uniqueEvents.has(key)) uniqueEvents.set(key, {...event,display:roadEventText(event,language),point,highway:segment.highway,segmentIndex});
     }
   }
   const ranking = Object.keys(categories);
@@ -173,17 +174,18 @@ export function roadMap(profileSegments = [], reportSegments = [], language = 'z
     `<polyline class="road-map-${kind}" points="${coordinates}"${kind==='track'?` data-segment-index="${segmentIndex}"`:''}></polyline>`
   )).join('');
   const chip = kind => `<span class="road-map-chip" aria-hidden="true">${categories[kind][1]}</span>`;
-  const caption = marker => [categories[marker.kind][0], marker.highway, marker.title, marker.level].filter(Boolean).join(' · ');
+  const caption = marker => [categories[marker.kind][0], marker.highway, marker.display?.title ?? marker.title, marker.level].filter(Boolean).join(' · ');
   const mapPins = markers.map(marker => {
     const {x,y} = project(marker.point,around);
     return `<button type="button" class="road-map-pin" data-map-pin="${marker.key}" data-kind="${marker.kind}" data-segment-index="${marker.segmentIndex}" data-x="${x}" data-y="${y}" aria-label="${escapeHtml(caption(marker))}" title="${escapeHtml(caption(marker))}" aria-pressed="false" hidden>${chip(marker.kind)}</button>`;
   }).join('');
-  const closureButtons = markers.filter(marker => marker.kind === 'closure').map(marker => `<button type="button" data-map-focus="${marker.key}" data-kind="closure">${chip('closure')}${escapeHtml([marker.highway,marker.title].filter(Boolean).join(' · '))}</button>`).join('');
+  const closureButtons = markers.filter(marker => marker.kind === 'closure').map(marker => `<button type="button" data-map-focus="${marker.key}" data-kind="closure">${chip('closure')}${escapeHtml([marker.highway,marker.display.title].filter(Boolean).join(' · '))}</button>`).join('');
   const legend = [...new Set(markers.map(marker => marker.kind))].map(kind => `<span data-kind="${kind}">${chip(kind)}${categories[kind][0]}</span>`).join('');
   const timeFormatter = new Intl.DateTimeFormat(language === 'en' ? 'en-US' : 'zh-CN', {dateStyle:'medium',timeStyle:'short',timeZone:'UTC'});
   const descriptions = markers.map(marker => {
     const href = validSource(marker.sourceUrl);
-    const source = href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(marker.source || tr('来源','Source'))}</a>` : escapeHtml(marker.source || '');
+    const sourceName = roadSource(marker.source,language);
+    const source = href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(sourceName || tr('来源','Source'))}</a>` : escapeHtml(sourceName);
     const notice=validSource(marker.noticeUrl);
     const checkpoint=validSource(marker.checkpointUrl);
     const originalLinks=[
@@ -197,10 +199,14 @@ export function roadMap(profileSegments = [], reportSegments = [], language = 'z
       return `${label} <time datetime="${iso}">${escapeHtml(displayed)} UTC</time>`;
     });
     if (marker.kind !== 'segment' && !timeDetails.length) timeDetails.push(tr('来源时间暂无数据','Source time unavailable'));
-    const segment = marker.start && marker.end ? `${marker.start} → ${marker.end}` : marker.start || marker.end;
-    const details = [segment,marker.direction,marker.active === false && marker.kind === 'construction' ? tr('计划施工','Scheduled work') : ''].filter(Boolean).join(' · ');
+    const segment = [marker.start,marker.end].filter(Boolean).map(value=>roadLocation(value,language)).join(' → ');
+    const details = [segment,marker.display?.direction,marker.active === false && marker.kind === 'construction' ? tr('计划施工','Scheduled work') : ''].filter(Boolean).join(' · ');
+    const desc = marker.display?.description;
+    const originalOnly = language === 'zh' && desc && desc === marker.description && /[a-z]/i.test(desc) && !/\p{Script=Han}/u.test(desc);
+    const original = language === 'zh' && marker.display && (originalOnly || marker.display.title !== (marker.title ?? '') || desc !== (marker.description ?? '') || marker.display.direction !== (marker.direction ?? ''))
+      ? `<details><summary>查看英文原文</summary><p lang="en">${escapeHtml([marker.title,marker.direction,marker.description].filter(Boolean).join(' · '))}</p></details>` : '';
     const attribution=[source,...originalLinks,...timeDetails].filter(Boolean);
-    return `<template data-map-template="${marker.key}"><h4 data-kind="${marker.kind}">${chip(marker.kind)}${escapeHtml(caption(marker))}</h4>${details?`<p>${escapeHtml(details)}</p>`:''}${marker.description?`<p>${escapeHtml(marker.description)}</p>`:''}${attribution.length?`<small class="muted">${attribution.join(' · ')}</small>`:''}</template>`;
+    return `<template data-map-template="${marker.key}"><h4 data-kind="${marker.kind}">${chip(marker.kind)}${escapeHtml(caption(marker))}</h4>${details?`<p>${escapeHtml(details)}</p>`:''}${desc&&!originalOnly?`<p>${escapeHtml(desc)}</p>`:''}${original}${attribution.length?`<small class="muted">${attribution.join(' · ')}</small>`:''}</template>`;
   }).join('');
 
   return `${styles}<div class="road-map" data-road-map data-bounds="${bounds.join(',')}" data-reference-longitude="${around}">
