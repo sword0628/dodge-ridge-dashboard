@@ -332,10 +332,11 @@ function chpCategory(title, location, style) {
   return null;
 }
 
-function chpRoadClearAt(notes, verifiedAt) {
+function chpRoadClearAt(notes, verifiedAt, category) {
   const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const stamp = /^(\w{3})\s+(\d{1,2})\s+(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AP])M\s*\[(\d+)\]\s*(.+)$/i;
   const cleared = /^(?:[A-Z]\d{1,3}-\d{1,4}\s+)?(?:(?:RDWY|ROADWAY)\s+(?:IS\s+)?(?:CLR|CLEAR)(?:\s+(?:ON|TO)\s+(?:THE\s+)?(?:RHS|RIGHT SHOULDER)(?:\s+NOW)?)?|ALL\s+(?:LNS|LANES)\s+(?:ARE\s+)?(?:CLR|CLEAR|OPEN))[. ]*(?:\[SHARED\])?$/i;
+  const removed = /^(?:[A-Z]\d{1,3}-\d{1,4}\s+)?FSP\s+TOOK\s+(?:THE\s+)?VEH(?:ICLE)?\s+OFF\s+(?:THE\s+)?(?:FRWY|FREEWAY)(?:\s*\/\s*1098)?[. ]*(?:\[SHARED\])?$/i;
   const blockage = /\b(?:BLK?ING|BLOCK(?:ING|ED))\s+(?:#|(?:ALL\s+)?(?:RDWY|ROADWAY|LNS?|LANES?)\b)|\b(?:RDWY|ROADWAY|LNS?|LANES?)\s+(?:(?:IS|ARE)\s+)?(?:BLOCKED|CLOSED)\b/i;
   const pad = value => String(value).padStart(2, '0');
   const updates = notes.split(/<br\s*\/?>/i).flatMap(line => {
@@ -346,7 +347,7 @@ function chpRoadClearAt(notes, verifiedAt) {
     const hour24 = Number(hour) % 12 + (meridiem.toUpperCase() === 'P' ? 12 : 0);
     const time = localInstant(`${year}-${pad(monthNumber)}-${pad(day)}`, `${pad(hour24)}:${minute}:${second}`);
     if (!time || Date.parse(time) > Date.parse(verifiedAt) + 60_000) return [];
-    const clear = cleared.test(message);
+    const clear = cleared.test(message) || category==='hazard' && removed.test(message);
     return clear || blockage.test(message) ? [{time,index:Number(index),clear}] : [];
   });
   const latest = updates.sort((a,b) => b.time.localeCompare(a.time) || b.index-a.index)[0];
@@ -379,7 +380,7 @@ function chpEvents(segment, feed, line) {
     const pad = value => String(value).padStart(2, '0');
     const hour = stamp && Number(stamp[4]) % 12 + (stamp[6].toLowerCase() === 'p' ? 12 : 0);
     const updatedAt = stamp && localInstant(`${stamp[3]}-${pad(stamp[1])}-${pad(stamp[2])}`, `${pad(hour)}:${stamp[5]}:00`);
-    const roadClearAt = chpRoadClearAt(paragraphs[1] ?? '', updatedAt ?? feed.sourceUpdatedAt);
+    const roadClearAt = chpRoadClearAt(paragraphs[1] ?? '', updatedAt ?? feed.sourceUpdatedAt, category);
     return [{id: `chp-${incidentId}`, recordId:incidentId, kind:category === 'closure' ? 'closure' : 'accident',category,
       title, description:summary.slice(0,200), ...p, start: segment.start, end: segment.end, direction: matched[2] ?? segment.direction,
       active: true, updatedAt: updatedAt ?? feed.sourceUpdatedAt, timestampKind:'source-reported', source:'CHP · Caltrans QuickMap',
