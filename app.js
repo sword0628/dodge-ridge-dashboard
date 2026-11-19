@@ -161,6 +161,19 @@ function cameraLink(camera) {
   return link(roadLocation(camera.title,language) || tr('沿途摄像头','Road camera'),camera.officialUrl || `${quickMap}?layers=cctv`);
 }
 
+function incidentMap(segment) {
+  const query = new URLSearchParams({layers:'chp_incidents'});
+  const {startLat,endLat,startLon,endLon} = segment;
+  if ([startLat,endLat,startLon,endLon].every(Number.isFinite)) {
+    const lat = ((startLat + endLat) / 2).toFixed(5);
+    const lon = ((startLon + endLon) / 2).toFixed(5);
+    const span = Math.max(Math.abs(endLat - startLat),Math.abs(endLon - startLon));
+    const zoom = span > .2 ? 10 : span > .09 ? 11 : 12;
+    query.set('view',`${lat},${lon},${zoom}`);
+  }
+  return link(tr('在 QuickMap 查看这段路的 CHP 实时通报','View live CHP reports near this segment in QuickMap'),`${quickMap}?${query}`);
+}
+
 function chainSummary(segments,snapshot,current,returning) {
   const heading=`<h3>${tr('链条管制','Traction controls')}</h3>`;
   const id = returning ? 'returnChainSummary' : 'roadChainSummary';
@@ -195,14 +208,17 @@ function renderRoadCard(segment) {
   const chainAvailable = segment.coverage?.chainControls === 'available' || (!segment.coverage && segment.status === 'ok');
   const chainText = segment.coverage?.chainControls === 'notPublished' ? tr('本区未发布检查点数据','District does not publish checkpoint data') : chainAvailable ? tr('未查到已发布管制','No posted restrictions found') : mdash();
   const incidentsKnown = segment.coverage?.incidents === 'available';
+  const incidentRow = incidents.length || incidentsKnown
+    ? `<details><summary>${tr('实时事件','Live incidents')} · ${incidents.length}</summary>${incidents.length?`<ul class="road-events">${incidents.map(event=>eventRow(event,true)).join('')}</ul>`:`<p>${tr('未查到区间内的 CHP 通报','No matching CHP reports')}</p>`}</details>`
+    : `<p class="source-line">${incidentMap(segment)}</p>`;
   const cameras = segment.cameras ?? [];
-  const official = [roadNotice(segment.highway),link('Caltrans QuickMap',quickMap),link(tr('CHP 实时事故','CHP incidents'),chp)].filter(Boolean);
+  const official = [roadNotice(segment.highway),link('Caltrans QuickMap',quickMap)].filter(Boolean);
   return `<article class="panel route-card"><h3>${h(segmentName(segment))}</h3>
     ${segment.direction?`<p class="muted">${h(roadDirection(segment.direction,language))}</p>`:''}
     <p class="muted source-line">${official.join(' · ')}${segment.updatedAt?` · ${tr('抓取','Fetched')} ${timeLabel(segment.updatedAt)}`:''}</p>
     ${closures.length?`<ul class="road-events">${closures.map(event=>eventRow(event,true)).join('')}</ul>`:''}
     ${checks.length?`<details><summary>${tr('链条管制','Traction control')} · ${h([...new Set(checks.map(item=>item.level).filter(Boolean))].join(' / '))} · ${checks.length}</summary><ul class="road-events">${checks.map(event=>eventRow(event,true)).join('')}</ul></details>`:`<p>${tr('链条管制','Traction control')} · ${h(chainText)}</p>`}
-    <details><summary>${tr('实时事故','Incidents')} · ${incidents.length || (incidentsKnown ? '0' : h(mdash()))}</summary>${incidents.length?`<ul class="road-events">${incidents.map(event=>eventRow(event,true)).join('')}</ul>`:`<p>${incidentsKnown ? tr('未查到区间内事故通报','No matching incident reports') : `${h(mdash())} · ${link(tr('打开 CHP 原站核对','Check the CHP site'),chp)}`}</p>`}</details>
+    ${incidentRow}
     ${work.length?`<details><summary>${tr('施工与通报','Roadwork and advisories')} · ${work.length}</summary><ul class="road-events">${work.map(event=>eventRow(event,true)).join('')}</ul></details>`:''}
     ${cameras.length?`<details><summary>${tr('沿途摄像头','Road cameras')} · ${cameras.length}</summary><ul class="camera-list">${cameras.map(camera=>`<li>${cameraLink(camera)}${camera.updatedAt?` <small>· ${timeLabel(camera.updatedAt)}</small>`:''}</li>`).join('')}</ul></details>`:`<p class="muted">${tr('沿途摄像头','Road cameras')} · ${h(mdash())}</p>`}
   </article>`;
