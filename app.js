@@ -24,7 +24,8 @@ let triedRefresh = false;
 let lastRefreshStarted = 0;
 let renderedFreshness = '';
 let point = 'base';
-let roadView = location.hash === '#return-roads' ? 'return-roads' : 'roads';
+const viewForHash = hash => hash === '#return-roads' ? 'return-roads' : ['', '#roads', '#verdict'].includes(hash) ? 'roads' : null;
+let roadView = viewForHash(location.hash) ?? 'roads';
 const selectedRoad = {roads:-1,'return-roads':-1};
 const tr = (zh,en) => language === 'en' ? en : zh;
 const mdash = () => tr('暂无数据','No data');
@@ -185,8 +186,11 @@ function restrictionGroups(checks) {
     if (!groups.has(key)) groups.set(key,new Map());
     groups.get(key).set(event.recordId??event.id,event);
   }
-  return [...groups.values()].map(group=>{
-    const records=[...group.values()];
+  return [...groups.values()].map(group=>[...group.values()]);
+}
+
+function restrictionRows(checks) {
+  return restrictionGroups(checks).map(records=>{
     const [first]=records;
     if (records.length===1) return eventRow(first,true);
     const title=[tr('链条管制','Traction control'),first.level,roadDirection(first.direction,language),tr(`${records.length} 个检查点`,`${records.length} checkpoints`)].filter(Boolean).join(' · ');
@@ -198,7 +202,7 @@ function restrictionGroups(checks) {
 function renderRoadCard(segment) {
   const critical = segment.critical ?? [];
   const primary = critical.filter(event=>event.kind!=='restriction').map(event=>eventRow(event,true)).join('');
-  const checks = restrictionGroups(critical.filter(event=>event.kind==='restriction'));
+  const checks = restrictionRows(critical.filter(event=>event.kind==='restriction'));
   const work = (segment.events ?? []).filter(event=>event.kind==='construction' && event.active!==false);
   const cameras = segment.cameras ?? [];
   const official = [roadNotice(segment.highway),incidentMap(segment)].filter(Boolean);
@@ -223,12 +227,48 @@ function roadSources(road, chpLayer) {
   return `<details class="panel"><summary>${tr('官方来源与更新时间','Official sources and update times')}${status}</summary>${stamps(road,.75)}<p class="muted source-line">${staleChp}${chpTimes}${failed}</p><div class="actions">${link('Caltrans QuickMap',quickMap)} ${link(tr('CHP 实时通报','Live CHP reports'),chp)} ${link(tr('CA-108 官方通报','Official CA-108 bulletin'),`${stateRoute}108`)}</div></details>`;
 }
 
+function renderReturnOverview(segments, snapshot, chpLayer) {
+  const alerts = segments.flatMap((segment,index)=>{
+    const alerts = segment.critical.filter(event=>event.kind!=='restriction').map(event=>({segment,index,event,count:1}));
+    for (const group of restrictionGroups(segment.critical.filter(event=>event.kind==='restriction'))) {
+      const event = group.reduce((latest, item)=>(item.verifiedAt ?? item.updatedAt ?? '') > (latest.verifiedAt ?? latest.updatedAt ?? '') ? item : latest);
+      alerts.push({segment,index,event,count:group.length});
+    }
+    return alerts;
+  });
+  const severity = {closure:0,accident:1,restriction:2};
+  const seen = new Set();
+  const rows = alerts.sort((a,b)=>severity[a.event.kind]-severity[b.event.kind]).flatMap(({segment,index,event,count})=>{
+    const {kind, id} = event;
+    if (kind!=='restriction' && id && seen.has(id)) return [];
+    if (kind!=='restriction' && id) seen.add(id);
+    const display = roadEventText(event,language);
+    const label = {closure:tr('封闭','Closure'), restriction:tr('管制','Traction control'),
+      accident:tr('道路事件','Road incident')}[kind];
+    const detail = kind==='restriction'
+      ? [display.direction,tr(`${count} 个检查点`,`${count} checkpoint${count===1?'':'s'}`)].filter(Boolean).join(' · ')
+      : display.description.replace(/^\s*[A-Z][a-z]{2}\s+\d{1,2}\s+\d{4}\s+\d{1,2}:\d{2}\s*[AP]M\s*·\s*/i,'');
+    const title = [segment.highway,kind==='restriction' ? event.level || display.title : display.title].filter(Boolean).join(' · ');
+    const isChp = /^CHP\b/i.test(event.source ?? '');
+    const source = link(isChp?tr('CHP 原文','CHP report'):tr('Caltrans 原文','Caltrans report'),event.noticeUrl || event.sourceUrl);
+    const stamp = timeLabel(event.verifiedAt ?? event.checkedAt ?? event.updatedAt);
+    const stampLabel = event.verifiedAt || event.checkedAt ? tr('核对','Checked') : tr('更新','Updated');
+    return [`<li class="return-alert-row" data-kind="${kind}"><span class="return-alert-chip">${label}</span><div class="return-alert-copy"><strong>${h(title)}</strong>${detail?`<p>${h(detail)}</p>`:''}<p class="muted source-line">${source}${stamp?` · ${stampLabel} ${stamp}`:''}</p></div><div class="return-alert-actions"><button class="text-button" type="button" data-return-segment="${index}" aria-label="${h(tr(`查看路段 ${title}`,`View segment ${title}`))}">${tr('看路段','View segment')}</button></div></li>`];
+  });
+  const currentRoad = !stale(snapshot,.75) && snapshot?.data?.segments?.length;
+  const coverage = [
+    !currentRoad || snapshot.error ? tr('Caltrans 路况待核对','Caltrans conditions not verified') : '',
+    chpLayer.stale ? tr('CHP 通报待核对','CHP reports not verified') : '',
+  ].filter(Boolean).join(' · ');
+  $('returnOverview').innerHTML = `<div><h1>${tr('回程摘要','Return summary')}</h1><p class="trip-line">Dodge Ridge → Santa Clara</p></div>${rows.length?`<ul class="return-alerts" aria-label="${tr('回程关键通报','Current return alerts')}">${rows.join('')}</ul>`:''}${coverage?`<p class="muted source-line">${coverage}</p>`:''}`;
+}
+
 function renderRoads() {
   const id = roadView;
   const returning = id === 'return-roads';
   const root = $(id);
-  $('roads').hidden = returning;
-  $('return-roads').hidden = !returning;
+  $('outbound-view').hidden = returning;
+  $('return-view').hidden = !returning;
   for (const name of Object.keys(selectedRoad)) {
     const tab = $('sectionNav').querySelector(`a[href="#${name}"]`);
     if (name === id) tab.setAttribute('aria-current','location');
@@ -252,11 +292,11 @@ function renderRoads() {
     critical.sort((a,b)=>eventOrder[a.kind]-eventOrder[b.kind]);
     return {...report,events:roadEvents,critical};
   });
+  if (returning) renderReturnOverview(segments,snapshot,chpLayer);
   const map = roadMap(configured,segments,language);
-  const title = returning ? tr('回程路况','Return road conditions') : tr('去程路况','Outbound road conditions');
-  const corridor = returning ? tr('Dodge Ridge → Santa Clara · 沿同一主干公路范围反向核对。匝道与地方道路没有独立监控。','Dodge Ridge → Santa Clara · The same main highway sections are checked in reverse. Ramps and local roads have no separate coverage.') : 'Santa Clara → Dodge Ridge';
+  const roadsHeading = returning ? '' : heading(tr('去程路况','Outbound roads'));
   const scope = returning ? tr('CA‑108 回程从 Pinecrest Lake Road 交汇处向西监控。Caltrans 公路通报覆盖全线。','The CA‑108 return check runs west from Pinecrest Lake Road. Caltrans highway bulletins cover the full highway.') : tr('CA‑108 监控到 Pinecrest Lake Road 转弯口为止。Caltrans 公路通报覆盖全线。','CA‑108 monitoring ends at the Pinecrest Lake Road turnoff. Caltrans highway bulletins cover the full highway.');
-  root.innerHTML = `<div class="section-head section-heading"><div><h2>${h(title)}</h2><p class="muted">${h(corridor)}</p></div></div><div class="panel">${map}</div><div id="${returning?'returnMapRoadCard':'mapRoadCard'}" class="map-road-card" role="region" aria-label="${h(tr('所选路段','Selected segment'))}" hidden></div>${segments.length?`<details class="panel public-road-list"><summary>${tr('全部监控路段','All monitored segments')} <span>${segments.length}</span></summary>${segments.map(renderRoadCard).join('')}</details>`:empty(tr('暂无监控路段','No monitored segments are available'))}${roadSources(snapshot,chpLayer)}<p class="muted source-line">${h(scope)}</p>`;
+  root.innerHTML = `${roadsHeading}<div class="panel">${map}</div><div id="${returning?'returnMapRoadCard':'mapRoadCard'}" class="map-road-card" role="region" aria-label="${h(tr('所选路段','Selected segment'))}" tabindex="-1" hidden></div>${segments.length?`<details class="panel public-road-list"><summary>${tr('全部监控路段','All monitored segments')} <span>${segments.length}</span></summary>${segments.map(renderRoadCard).join('')}</details>`:empty(tr('暂无监控路段','No monitored segments are available'))}${roadSources(snapshot,chpLayer)}<p class="muted source-line">${h(scope)}</p>`;
   const card = root.querySelector('.map-road-card');
   const select = index => {
     selectedRoad[id] = index;
@@ -355,14 +395,37 @@ setInterval(()=>{
   }
 },60_000);
 function scrollToRoadView() {
-  if (location.hash === `#${roadView}`) $(roadView).scrollIntoView();
+  const view = viewForHash(location.hash);
+  if (location.hash && view) $(view==='return-roads'?'returnOverview':'verdict').scrollIntoView();
 }
-window.addEventListener('hashchange',()=>{
-  const next = location.hash.slice(1);
-  if (!Object.hasOwn(selectedRoad,next) || next === roadView) return;
-  roadView = next;
-  renderRoads();
+function syncRoadView() {
+  const next = viewForHash(location.hash);
+  if (!next) return;
+  if (next !== roadView) {
+    roadView = next;
+    renderRoads();
+  }
   requestAnimationFrame(scrollToRoadView);
+}
+window.addEventListener('hashchange',syncRoadView);
+$('sectionNav').addEventListener('click',event=>{
+  const anchor = event.target.closest('a');
+  if (!anchor || !viewForHash(anchor.hash) || event.button!==0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  if (location.hash!==anchor.hash) history.pushState(null,'',anchor.hash);
+  syncRoadView();
+});
+$('returnOverview').addEventListener('click',event=>{
+  const button = event.target.closest('[data-return-segment]');
+  if (!button) return;
+  const mapPin = $('return-roads').querySelector(`[data-map-pin][data-segment-index="${button.dataset.returnSegment}"]`);
+  if (mapPin) mapPin.click();
+  else $('return-roads').querySelector('[data-road-map]')?.dispatchEvent(new CustomEvent('roadsegmentselect',{detail:{index:Number(button.dataset.returnSegment)}}));
+  const card = $('returnMapRoadCard');
+  if (card && !card.hidden) {
+    card.focus({preventScroll:true});
+    card.scrollIntoView();
+  }
 });
 $('weather').addEventListener('click',event=>{
   const button = event.target.closest('button');

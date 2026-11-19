@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#143735">
   <meta name="referrer" content="no-referrer">
   <title>滑雪后勤 · Dodge Ridge</title>
-  <link rel="stylesheet" href="./styles.css?v=6">
+  <link rel="stylesheet" href="./styles.css?v=8">
   <style>
     .public-forecast-point {text-align:start}
     .public-forecast-point small {display:block;margin-top:.25rem}
@@ -18,7 +18,7 @@
   </style>
 </head>
 <body>
-  <a class="skip-link" href="#verdict" data-zh="跳到出发判决" data-en="Skip to departure">跳到出发判决</a>
+  <a class="skip-link" href="#main" data-zh="跳到主要内容" data-en="Skip to main content">跳到主要内容</a>
   <header class="app-header">
     <div class="header-inner">
       <a class="brand" href="#verdict">
@@ -36,19 +36,29 @@
   <div class="layout">
     <aside class="side">
       <nav class="section-nav" aria-label="导航" id="sectionNav">
-        <a href="#verdict" data-zh="出发判决" data-en="Departure">出发判决</a>
-        <a href="#roads" data-zh="去程路况" data-en="Outbound roads">去程路况</a>
-        <a href="#return-roads" data-zh="回程路况" data-en="Return roads">回程路况</a>
-        <a href="#weather" data-zh="天气与降雪" data-en="Weather &amp; snow">天气与降雪</a>
+        <div class="direction-switch" role="group" aria-labelledby="directionLabel">
+          <span id="directionLabel" class="sr-only" data-zh="行车方向" data-en="Travel direction">行车方向</span>
+          <a href="#roads" aria-controls="outbound-view" aria-current="location" data-zh="去程" data-en="Outbound">去程</a>
+          <a href="#return-roads" aria-controls="return-view" data-zh="回程" data-en="Return">回程</a>
+        </div>
+        <a class="shared-weather-link" href="#weather" data-zh="天气与降雪" data-en="Weather &amp; snow">天气与降雪</a>
       </nav>
     </aside>
-    <main id="main">
-      <section id="verdict" class="verdict hero" aria-label="出发判决" tabindex="-1">
-        <h1>Santa Clara → Dodge Ridge</h1>
-        <p>正在读取公开路况与预报…</p>
-      </section>
-      <section id="roads" class="section" aria-label="去程路况" tabindex="-1"></section>
-      <section id="return-roads" class="section" aria-label="回程路况" tabindex="-1" hidden></section>
+    <main id="main" tabindex="-1">
+      <div id="outbound-view" class="direction-view">
+        <section id="verdict" class="verdict hero" aria-label="出发判决" tabindex="-1">
+          <h1>Santa Clara → Dodge Ridge</h1>
+          <p>正在读取公开路况与预报…</p>
+        </section>
+        <section id="roads" class="section" aria-label="去程路况" tabindex="-1"></section>
+      </div>
+      <div id="return-view" class="direction-view" hidden>
+        <header id="returnOverview" class="panel return-overview" tabindex="-1">
+          <h1>回程概览</h1>
+          <p>Dodge Ridge → Santa Clara</p>
+        </header>
+        <section id="return-roads" class="section" aria-label="回程路况" tabindex="-1"></section>
+      </div>
       <section id="weather" class="section" aria-label="天气与降雪" tabindex="-1"></section>
       <footer class="panel"><p class="muted source-line" id="sourceCredit"></p></footer>
     </main>
@@ -61,6 +71,6 @@
     <div id="forecastBody" class="dialog-body"></div>
   </dialog>
   <noscript><p class="noscript">此看板需要 JavaScript。<a href="https://quickmap.dot.ca.gov/">查看 Caltrans QuickMap</a>。</p></noscript>
-  <script type="module" src="./app.js?v=7"></script>
+  <script type="module" src="./app.js?v=8"></script>
 </body>
 </html>
