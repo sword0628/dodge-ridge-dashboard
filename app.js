@@ -1,7 +1,7 @@
 import {loadDashboard, refreshDashboard, refreshRoadLayers} from './page-data.js?v=6';
 import {bestSnow, dateKey, localDays, quant, valid} from './forecast.js';
 import {renderRouteTowns} from './route-towns-view.js';
-import {bindRoadMap, roadMap} from './road-map.js?v=6';
+import {bindRoadMap, roadMap} from './road-map.js?v=7';
 import {roadDirection, roadEventText, roadLocation, roadSource} from './road-locale.js';
 import {reverseSegments} from './return-route.js';
 import {chpSegments,chpSnapshot,segmentKey} from './chp-snapshot.js';
@@ -218,8 +218,9 @@ function roadSources(road, chpLayer) {
     ? `CHP · ${tr('来源更新','Source updated')} ${published} · ${tr('采集','Collected')} ${checked}`
     : tr('CHP 快照暂不可用。','The CHP snapshot is unavailable.');
   const staleChp = chpLayer.stale && chpLayer.data ? `<span class="badge stale">${tr('旧快照','Stale snapshot')}</span> ` : '';
+  const failed = chpLayer.failed && chpLayer.data ? tr(' · 本次更新失败',' · Latest update failed') : '';
   const status = chpLayer.stale ? tr(' · CHP 待核对',' · CHP not verified') : '';
-  return `<details class="panel"><summary>${tr('官方来源与更新时间','Official sources and update times')}${status}</summary>${stamps(road,.75)}<p class="muted source-line">${staleChp}${chpTimes}</p><div class="actions">${link('Caltrans QuickMap',quickMap)} ${link(tr('CHP 实时通报','Live CHP reports'),chp)} ${link(tr('CA-108 官方通报','Official CA-108 bulletin'),`${stateRoute}108`)}</div></details>`;
+  return `<details class="panel"><summary>${tr('官方来源与更新时间','Official sources and update times')}${status}</summary>${stamps(road,.75)}<p class="muted source-line">${staleChp}${chpTimes}${failed}</p><div class="actions">${link('Caltrans QuickMap',quickMap)} ${link(tr('CHP 实时通报','Live CHP reports'),chp)} ${link(tr('CA-108 官方通报','Official CA-108 bulletin'),`${stateRoute}108`)}</div></details>`;
 }
 
 function renderRoads() {

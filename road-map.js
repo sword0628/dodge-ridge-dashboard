@@ -113,7 +113,7 @@ export function roadMap(profileSegments = [], reportSegments = [], language = 'z
   const tr = (zh, en) => language === 'en' ? en : zh;
   const categories = {
     closure:[tr('封闭','Closure'),tr('封','X')], restriction:[tr('管制','Restriction'),tr('管','R')],
-    accident:[tr('事故','Incident'),tr('事','I')], segment:[tr('路段','Segment'),tr('路','S')],
+    accident:[tr('道路事件','Road incident'),tr('事','I')], segment:[tr('路段','Segment'),tr('路','S')],
   };
   const routes = profileSegments.length ? profileSegments : reportSegments;
   const tracks = [];
