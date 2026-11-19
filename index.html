@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#143735">
+  <meta name="referrer" content="no-referrer">
+  <title>滑雪后勤 · Dodge Ridge</title>
+  <link rel="stylesheet" href="./styles.css">
+  <style>
+    .public-forecast-point {text-align:start}
+    .public-forecast-point small {display:block;margin-top:.25rem}
+    .public-road-list > summary {display:flex;justify-content:space-between;align-items:center;gap:.55rem}
+    .public-road-list > summary span {color:var(--muted);font-size:.8rem}
+    .public-evidence {max-height:19rem;overflow:auto}
+    .public-forecast-day {text-align:start;min-width:4.6rem}
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#verdict" data-zh="跳到出发判决" data-en="Skip to departure">跳到出发判决</a>
+  <header class="app-header">
+    <div class="header-inner">
+      <a class="brand" href="#verdict">
+        <span class="brand-mark" aria-hidden="true"><i></i></span>
+        <span data-zh="滑雪后勤" data-en="Ski logistics">滑雪后勤</span>
+      </a>
+      <div id="headerStatus" class="header-status" role="status" aria-live="polite"></div>
+      <div class="header-actions">
+        <button id="language" class="quiet" type="button" aria-label="Switch to English">EN</button>
+        <button id="units" class="quiet" type="button" aria-label="切换为华氏温度">°C</button>
+        <button id="refresh" class="refresh-button" type="button">刷新</button>
+      </div>
+    </div>
+  </header>
+  <div class="layout">
+    <aside class="side">
+      <nav class="section-nav" aria-label="导航" id="sectionNav">
+        <a href="#verdict" data-zh="出发判决" data-en="Departure">出发判决</a>
+        <a href="#roads" data-zh="去程路况" data-en="Outbound roads">去程路况</a>
+        <a href="#weather" data-zh="天气与降雪" data-en="Weather &amp; snow">天气与降雪</a>
+      </nav>
+    </aside>
+    <main id="main">
+      <section id="verdict" class="verdict hero" aria-label="出发判决" tabindex="-1">
+        <h1>Santa Clara → Dodge Ridge</h1>
+        <p>正在读取公开路况与预报…</p>
+      </section>
+      <section id="roads" class="section" aria-label="去程路况" tabindex="-1"></section>
+      <section id="weather" class="section" aria-label="天气与降雪" tabindex="-1"></section>
+      <footer class="panel"><p class="muted source-line" id="sourceCredit"></p></footer>
+    </main>
+  </div>
+  <dialog id="forecastDialog" aria-labelledby="forecastTitle">
+    <header class="dialog-header">
+      <h2 id="forecastTitle"></h2>
+      <form method="dialog"><button id="closeForecast" class="quiet close-button" type="submit" aria-label="关闭">×</button></form>
+    </header>
+    <div id="forecastBody" class="dialog-body"></div>
+  </dialog>
+  <noscript><p class="noscript">此看板需要 JavaScript。<a href="https://quickmap.dot.ca.gov/">查看 Caltrans QuickMap</a>。</p></noscript>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
