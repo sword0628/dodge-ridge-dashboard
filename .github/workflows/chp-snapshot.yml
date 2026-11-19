@@ -1,0 +1,45 @@
+name: Publish CHP route snapshot
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '4,14,24,34,44,54 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chp-route-snapshot
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Collect and publish scoped official reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/refresh-chp.mjs "$RUNNER_TEMP/chp.json"
+          target="$RUNNER_TEMP/chp-data"
+          status=0
+          git ls-remote --exit-code origin refs/heads/chp-data >/dev/null || status=$?
+          case "$status" in
+            0)
+              git fetch --no-tags origin refs/heads/chp-data
+              git worktree add --detach "$target" FETCH_HEAD
+              ;;
+            2)
+              git worktree add --detach "$target" HEAD
+              git -C "$target" switch --orphan chp-data
+              ;;
+            *) exit "$status" ;;
+          esac
+          cp "$RUNNER_TEMP/chp.json" "$target/chp.json"
+          git -C "$target" add -- chp.json
+          git -C "$target" -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Refresh scoped CHP snapshot'
+          commit="$(git -C "$target" rev-parse HEAD)"
+          git push origin "$commit:refs/heads/chp-data"

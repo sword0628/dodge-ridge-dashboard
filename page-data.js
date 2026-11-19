@@ -1,8 +1,9 @@
 import {profile,points} from './itinerary.js';
 import {reverseSegments} from './return-route.js';
 import {routeTowns} from './route-towns.js';
-import {weather,roads,routeWeather,townsWeather} from './sources.js?v=4';
-import {MIN,HOUR,fresh,tripVerdict} from './logic.js';
+import {weather,roads,routeWeather,townsWeather} from './sources.js?v=6';
+import {MIN,HOUR,fresh,tripVerdict} from './logic.js?v=6';
+import {chpSegments,chpSnapshot,refreshChpSnapshot,segmentKey} from './chp-snapshot.js';
 
 const localKey='dodge-ridge-public-snapshots-v2';
 const route={segments:profile.segments,timeZone:profile.timeZone};
@@ -19,6 +20,10 @@ let activeRefresh;
 function view(key){
   const value=snapshots[key];
   return value?{...value,stale:!fresh(value,kinds[key])}:null;
+}
+
+function persist(){
+  try{localStorage.setItem(localKey,JSON.stringify(snapshots));}catch{}
 }
 
 function cameraPage(c){
@@ -76,11 +81,15 @@ export function loadDashboard(){
   const forecasts=view('towns');
   const base=view('base');
   const summit=view('summit');
+  const now=Date.now();
+  const chp=chpSnapshot(now);
+  const chpByRoute=new Map(chpSegments(chp,false).map(segment=>[segmentKey(segment),segment]));
+  const outboundChp=!chp.stale&&profile.segments.every(segment=>chpByRoute.has(segmentKey(segment))) ? [...chpByRoute.values()] : null;
   const updatedAt=[road,returnRoad,routeForecast,forecasts,base,summit].map(v=>v?.savedAt).filter(Boolean).sort().at(-1);
   const roadsReady=[road,returnRoad].every(snapshot=>snapshot?.data&&!snapshot.stale&&snapshot.data.segments.every(segment=>segment.status==='ok'));
   const partial=Boolean(updatedAt)&&(!roadsReady||![base,summit,forecasts].every(v=>v?.data&&!v.stale));
-  return {profile,roads:road,returnRoads:returnRoad,routeWeather:routeForecast,routeTowns:{...forecasts,places},weather:{base,summit},
-    verdict:tripVerdict(profile,road,routeForecast),
+  return {profile,roads:road,returnRoads:returnRoad,chp,routeWeather:routeForecast,routeTowns:{...forecasts,places},weather:{base,summit},
+    verdict:tripVerdict(profile,road,routeForecast,now,outboundChp,chp.data?.fetchedAt),
     refreshStatus:{status:updatedAt?partial?'partial':'live':'unavailable',partial,updatedAt}};
 }
 
@@ -89,11 +98,23 @@ export function refreshDashboard(){
   activeRefresh=(async()=>{
     const now=Date.now();
     const feedCache=new Map();
-    const done=await Promise.all(Object.keys(loaders).map(key=>update(key,now,feedCache)));
-    try{localStorage.setItem(localKey,JSON.stringify(snapshots));}catch{}
+    const [done]=await Promise.all([Promise.all(Object.keys(loaders).map(key=>update(key,now,feedCache))),refreshChpSnapshot()]);
+    persist();
     const dashboard=loadDashboard();
     if(!done.some(Boolean)&&dashboard.refreshStatus.updatedAt)dashboard.refreshStatus.status='cached';
     return dashboard;
   })().finally(()=>{activeRefresh=undefined;});
   return activeRefresh;
+}
+
+export async function refreshRoadLayers(){
+  if(activeRefresh)return activeRefresh;
+  const now=Date.now();
+  const feedCache=new Map();
+  await Promise.all([
+    ...['roads','returnRoads'].map(key=>fresh(snapshots[key],'roads',now)&&now-Date.parse(snapshots[key].savedAt)<3*MIN ? null : update(key,now,feedCache)),
+    refreshChpSnapshot(),
+  ]);
+  persist();
+  return loadDashboard();
 }

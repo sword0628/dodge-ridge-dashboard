@@ -1,5 +1,5 @@
 import {routeLandmarks} from './route-landmarks.js';
-import {roadEventText, roadLocation, roadSource} from './road-locale.js';
+import {roadLocation} from './road-locale.js';
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const tileService = 'https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile';
@@ -8,6 +8,7 @@ const clamp = (value,min,max) => Math.max(min,Math.min(max,value));
 const wrap = (value,period) => ((value%period)+period)%period;
 const minZoom=2, maxZoom=17;
 const overviewLandmarks=new Set(['santa-clara','sonora','pinecrest','dodge-ridge']);
+const severity=['closure','accident','restriction'];
 
 function coordinate(lat, lon) {
   if (lat == null || lon == null || lat === '' || lon === '') return null;
@@ -68,15 +69,6 @@ function project(point, around=point.lon) {
   };
 }
 
-function validSource(url) {
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === 'https:' && !parsed.username && !parsed.password ? parsed.href : '';
-  } catch {
-    return '';
-  }
-}
-
 const styles = `<style>
 .road-map {display:grid;gap:.65rem;min-width:0}
 .road-map .road-map-toolbar,.road-map .road-map-legend,.road-map .road-map-closures {display:flex;flex-wrap:wrap;gap:.4rem .65rem;align-items:center}
@@ -94,23 +86,19 @@ const styles = `<style>
 .road-map .road-map-halo {fill:none;stroke:#f4f9f4;stroke-width:8;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
 .road-map .road-map-track {fill:none;stroke:var(--accent,#23634e);stroke-width:4;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
 .road-map .road-map-pin {position:absolute;display:grid;place-items:center;width:42px;height:42px;min-height:0;padding:0;transform:translate(-50%,-50%);border:0;background:none;box-shadow:none;z-index:1}
-.road-map .road-map-pin:hover,.road-map .road-map-pin:focus-visible,.road-map .road-map-pin[aria-pressed=true] {background:none;z-index:8}
-.road-map .road-map-pin[aria-pressed=true] .road-map-chip {outline:3px solid var(--ink,#123731);outline-offset:2px}
-.road-map .road-map-pin[data-kind=closure] {z-index:5}
-.road-map .road-map-pin[data-kind=closure]:is(:hover,:focus-visible,[aria-pressed=true]) {z-index:9}
-.road-map .road-map-pin[data-kind=restriction] {z-index:3}
-.road-map .road-map-pin[data-kind=accident] {z-index:2}
+.road-map .road-map-pin[data-kind=closure] {z-index:4}
+.road-map .road-map-pin[data-kind=accident] {z-index:3}
+.road-map .road-map-pin[data-kind=restriction] {z-index:2}
 .road-map .road-map-pin[data-kind=segment] {width:28px;height:28px;z-index:0}
-.road-map .road-map-pin[data-kind=segment]:is(:hover,:focus-visible,[aria-pressed=true]) {z-index:1}
+.road-map .road-map-pin:hover {background:none}
+.road-map .road-map-pin:is(:focus-visible,[aria-pressed=true]) {background:none;z-index:8}
+.road-map .road-map-pin[aria-pressed=true] .road-map-chip {outline:3px solid var(--ink,#123731);outline-offset:2px}
 .road-map .road-map-chip {display:inline-grid;place-items:center;min-width:1.45em;height:1.45em;border-radius:50%;background:#2e5549;color:#fff;font-size:.87rem;font-weight:760;line-height:1}
 .road-map .road-map-pin .road-map-chip {width:28px;height:28px;border:2px solid #fff;box-shadow:0 1px 5px #182f3170}
 .road-map .road-map-pin[data-kind=segment] .road-map-chip {min-width:0;width:18px;height:18px;font-size:.67rem;box-shadow:0 1px 3px #182f3150}
 .road-map [data-kind=closure] .road-map-chip {background:#a32224}
-.road-map .road-map-pin[data-kind=closure] .road-map-chip {width:31px;height:31px}
-.road-map [data-kind=restriction] .road-map-chip {background:#80520c}
-.road-map [data-kind=accident] .road-map-chip {background:#71400b}
-.road-map [data-kind=construction] .road-map-chip {background:#3b526e}
-.road-map [data-kind=advisory] .road-map-chip {background:#565d60}
+.road-map [data-kind=accident] .road-map-chip {background:#a14818}
+.road-map [data-kind=restriction] .road-map-chip {background:#e6b547;color:#302000}
 .road-map .road-map-legend > span {display:inline-flex;gap:.3rem;align-items:center}
 .road-map .road-map-track-symbol {width:1.45rem;border-top:3px solid var(--accent,#23634e);border-radius:3px}
 .road-map .road-map-closures p {width:100%}
@@ -125,35 +113,24 @@ export function roadMap(profileSegments = [], reportSegments = [], language = 'z
   const tr = (zh, en) => language === 'en' ? en : zh;
   const categories = {
     closure:[tr('封闭','Closure'),tr('封','X')], restriction:[tr('管制','Restriction'),tr('管','R')],
-    accident:[tr('事故','Incident'),tr('事','I')], construction:[tr('施工','Roadwork'),tr('工','W')],
-    advisory:[tr('通报','Advisory'),'!'], segment:[tr('路段','Segment'),tr('路','S')],
+    accident:[tr('事故','Incident'),tr('事','I')], segment:[tr('路段','Segment'),tr('路','S')],
   };
   const routes = profileSegments.length ? profileSegments : reportSegments;
   const tracks = [];
-  const segmentMarkers = [];
+  const markers = [];
   for (const [segmentIndex,segment] of routes.entries()) {
     const {lines:paths, first, last} = segmentGeometry(segment);
     for (const path of paths) tracks.push({path,segmentIndex});
     const start = coordinate(segment.startLat, segment.startLon) ?? first;
     const end = coordinate(segment.endLat, segment.endLon) ?? last;
-    const point = pathMidpoint(paths) ?? start ?? end;
+    const critical = reportSegments[segmentIndex]?.critical ?? [];
+    const counts = Object.fromEntries(severity.map(kind=>[kind,critical.filter(event=>event.kind===kind).length]));
+    const kind = severity.find(value=>counts[value]>0) ?? 'segment';
+    const knownIssue = critical.find(event=>event.kind===kind && coordinate(event.lat,event.lon));
+    const point = pathMidpoint(paths) ?? start ?? end ?? coordinate(knownIssue?.lat,knownIssue?.lon);
     const title = [segment.start,segment.end].filter(Boolean).map(value=>roadLocation(value,language)).join(' → ');
-    if (point && title) segmentMarkers.push({point,kind:'segment',title,highway:segment.highway,segmentIndex});
+    if (point) markers.push({point,kind,counts,title,highway:segment.highway,segmentIndex,key:`road-marker-${segmentIndex}`});
   }
-
-  const uniqueEvents = new Map();
-  for (const [segmentIndex,segment] of reportSegments.entries()) {
-    for (const event of segment.events ?? []) {
-      const point = coordinate(event.lat, event.lon);
-      if (!point || !Object.hasOwn(categories,event.kind) || event.kind === 'segment') continue;
-      if (event.active === false && event.kind !== 'construction') continue;
-      const key = `${event.kind}:${event.id ?? event.title}:${point.lat}:${point.lon}`;
-      if (!uniqueEvents.has(key)) uniqueEvents.set(key, {...event,display:roadEventText(event,language),point,highway:segment.highway,segmentIndex});
-    }
-  }
-  const ranking = Object.keys(categories);
-  const events = [...uniqueEvents.values()].sort((a,b) => ranking.indexOf(a.kind) - ranking.indexOf(b.kind));
-  const markers = [...events, ...segmentMarkers].map((marker,index) => ({...marker, key:`road-marker-${index}`}));
   const points = [...tracks.flatMap(track=>track.path), ...markers.map(marker => marker.point)];
   if (!points.length) return `<div class="empty">${tr('地图暂无数据。确认路段坐标或公路几何后可显示。','No map data yet. Confirm segment coordinates or highway geometry to display the route.')}</div>`;
 
@@ -174,43 +151,22 @@ export function roadMap(profileSegments = [], reportSegments = [], language = 'z
     `<polyline class="road-map-${kind}" points="${coordinates}"${kind==='track'?` data-segment-index="${segmentIndex}"`:''}></polyline>`
   )).join('');
   const chip = kind => `<span class="road-map-chip" aria-hidden="true">${categories[kind][1]}</span>`;
-  const caption = marker => [categories[marker.kind][0], marker.highway, marker.display?.title ?? marker.title, marker.level].filter(Boolean).join(' · ');
+  const segmentLabel = marker => [marker.highway,marker.title].filter(Boolean).join(' · ') || categories.segment[0];
+  const issues = marker => severity.filter(kind=>marker.counts[kind]>0).map(kind=>`${categories[kind][0]} ${marker.counts[kind]}`).join(' · ');
   const mapPins = markers.map(marker => {
     const {x,y} = project(marker.point,around);
-    return `<button type="button" class="road-map-pin" data-map-pin="${marker.key}" data-kind="${marker.kind}" data-segment-index="${marker.segmentIndex}" data-x="${x}" data-y="${y}" aria-label="${escapeHtml(caption(marker))}" title="${escapeHtml(caption(marker))}" aria-pressed="false" hidden>${chip(marker.kind)}</button>`;
+    const label = escapeHtml([segmentLabel(marker),issues(marker)].filter(Boolean).join(' · '));
+    return `<button type="button" class="road-map-pin" data-map-pin="${marker.key}" data-kind="${marker.kind}" data-segment-index="${marker.segmentIndex}" data-x="${x}" data-y="${y}" aria-label="${label}" title="${label}" aria-pressed="false" hidden>${chip(marker.kind)}</button>`;
   }).join('');
-  const closureButtons = markers.filter(marker => marker.kind === 'closure').map(marker => `<button type="button" data-map-focus="${marker.key}" data-kind="closure">${chip('closure')}${escapeHtml([marker.highway,marker.display.title].filter(Boolean).join(' · '))}</button>`).join('');
-  const legend = [...new Set(markers.map(marker => marker.kind))].map(kind => `<span data-kind="${kind}">${chip(kind)}${categories[kind][0]}</span>`).join('');
-  const timeFormatter = new Intl.DateTimeFormat(language === 'en' ? 'en-US' : 'zh-CN', {dateStyle:'medium',timeStyle:'short',timeZone:'UTC'});
-  const descriptions = markers.map(marker => {
-    const href = validSource(marker.sourceUrl);
-    const sourceName = roadSource(marker.source,language);
-    const source = href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(sourceName || tr('来源','Source'))}</a>` : escapeHtml(sourceName);
-    const notice=validSource(marker.noticeUrl);
-    const checkpoint=validSource(marker.checkpointUrl);
-    const originalLinks=[
-      [notice,tr('Caltrans 官方原文','Original Caltrans notice')],
-      [checkpoint,tr('QuickMap 检查点','QuickMap checkpoint')],
-    ].filter(([url])=>url).map(([url,label])=>`<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`);
-    const dates = [[marker.updatedAt, marker.timestampKind === 'feed-retrieved' ? tr('信息时间','Feed time') : tr('来源更新','Source updated')], [marker.verifiedAt,tr('最近核对','Checked')], [marker.startsAt,tr('开始','Starts')], [marker.endsAt,tr('结束','Ends')]];
-    const timeDetails = dates.filter(([stamp]) => stamp && Number.isFinite(Date.parse(stamp))).map(([stamp,label]) => {
-      const iso = new Date(stamp).toISOString();
-      const displayed = timeFormatter.format(new Date(stamp));
-      return `${label} <time datetime="${iso}">${escapeHtml(displayed)} UTC</time>`;
-    });
-    if (marker.kind !== 'segment' && !timeDetails.length) timeDetails.push(tr('来源时间暂无数据','Source time unavailable'));
-    const segment = [marker.start,marker.end].filter(Boolean).map(value=>roadLocation(value,language)).join(' → ');
-    const details = [segment,marker.display?.direction,marker.active === false && marker.kind === 'construction' ? tr('计划施工','Scheduled work') : ''].filter(Boolean).join(' · ');
-    const desc = marker.display?.description;
-    const originalOnly = language === 'zh' && desc && desc === marker.description && /[a-z]/i.test(desc) && !/\p{Script=Han}/u.test(desc);
-    const original = language === 'zh' && marker.display && (originalOnly || marker.display.title !== (marker.title ?? '') || desc !== (marker.description ?? '') || marker.display.direction !== (marker.direction ?? ''))
-      ? `<details><summary>查看英文原文</summary><p lang="en">${escapeHtml([marker.title,marker.direction,marker.description].filter(Boolean).join(' · '))}</p></details>` : '';
-    const attribution=[source,...originalLinks,...timeDetails].filter(Boolean);
-    return `<template data-map-template="${marker.key}"><h4 data-kind="${marker.kind}">${chip(marker.kind)}${escapeHtml(caption(marker))}</h4>${details?`<p>${escapeHtml(details)}</p>`:''}${desc&&!originalOnly?`<p>${escapeHtml(desc)}</p>`:''}${original}${attribution.length?`<small class="muted">${attribution.join(' · ')}</small>`:''}</template>`;
+  const closureButtons = markers.filter(marker => marker.kind === 'closure').map(marker => `<button type="button" data-map-focus="${marker.key}" data-kind="closure">${chip('closure')}${escapeHtml(segmentLabel(marker))}</button>`).join('');
+  const legend = [...severity,'segment'].filter(kind=>markers.some(marker=>marker.kind===kind)).map(kind => `<span data-kind="${kind}">${chip(kind)}${categories[kind][0]}</span>`).join('');
+  const descriptions = markers.map(marker=>{
+    const summary = issues(marker);
+    return `<template data-map-template="${marker.key}"><h4 data-kind="${marker.kind}">${chip(marker.kind)}${escapeHtml(segmentLabel(marker))}</h4>${summary?`<p>${escapeHtml(summary)}</p>`:''}</template>`;
   }).join('');
 
   return `${styles}<div class="road-map" data-road-map data-bounds="${bounds.join(',')}" data-reference-longitude="${around}">
-    ${closureButtons?`<div class="road-map-closures"><p><strong>${tr('封闭点','Closures')}</strong></p>${closureButtons}</div>`:''}
+    ${closureButtons?`<div class="road-map-closures"><p><strong>${tr('封闭路段','Segments with closures')}</strong></p>${closureButtons}</div>`:''}
     <div class="road-map-toolbar"><p><strong>${tr('监控路段地图','Monitored road map')}</strong></p><div class="road-map-tools">
       <button type="button" data-map-command="zoom-out" aria-label="${tr('缩小地图','Zoom out')}" disabled>−</button>
       <button type="button" data-map-command="zoom-in" aria-label="${tr('放大地图','Zoom in')}">+</button>
@@ -240,7 +196,7 @@ export function bindRoadMap(root) {
     index:Number(line.dataset.segmentIndex),
     points:Array.from(line.points,p=>[p.x,p.y]),
   }));
-  const routePins=new Map(pins.filter(pin=>pin.dataset.kind==='segment').map(pin=>[Number(pin.dataset.segmentIndex),pin]));
+  const routePins=new Map(pins.map(pin=>[Number(pin.dataset.segmentIndex),pin]));
   const commands = Object.fromEntries([...map.querySelectorAll('[data-map-command]')].map(node => [node.dataset.mapCommand,node]));
   const tileLayer=stage.querySelector('[data-map-tiles]');
   const landmarkLayer=stage.querySelector('[data-map-landmarks]');
@@ -380,7 +336,8 @@ export function bindRoadMap(root) {
       const outside=x<0||x>width||y<0||y>height;
       if (outside && pin === document.activeElement) stage.focus({preventScroll:true});
       pin.hidden = outside;
-      if (!outside) occupied.push([x-10,y-10,x+10,y+10]);
+      const radius=pin.dataset.kind==='segment'?10:15;
+      if (!outside) occupied.push([x-radius,y-radius,x+radius,y+radius]);
     }
     paintTiles();
     stage.toggleAttribute('data-zoomed',zoom>fit.zoom+.05);

@@ -1,9 +1,10 @@
-import {loadDashboard, refreshDashboard} from './page-data.js?v=4';
+import {loadDashboard, refreshDashboard, refreshRoadLayers} from './page-data.js?v=6';
 import {bestSnow, dateKey, localDays, quant, valid} from './forecast.js';
 import {renderRouteTowns} from './route-towns-view.js';
-import {bindRoadMap, roadMap} from './road-map.js?v=3';
+import {bindRoadMap, roadMap} from './road-map.js?v=6';
 import {roadDirection, roadEventText, roadLocation, roadSource} from './road-locale.js';
 import {reverseSegments} from './return-route.js';
+import {chpSegments,chpSnapshot,segmentKey} from './chp-snapshot.js';
 
 const $ = id => document.getElementById(id);
 const h = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -20,6 +21,8 @@ let state = null;
 let busy = false;
 let loadFailed = false;
 let triedRefresh = false;
+let lastRefreshStarted = 0;
+let renderedFreshness = '';
 let point = 'base';
 let roadView = location.hash === '#return-roads' ? 'return-roads' : 'roads';
 const selectedRoad = {roads:-1,'return-roads':-1};
@@ -77,19 +80,22 @@ const eventIsActive = event => {
 };
 function eventRow(event, includeDescription=false) {
   const {title,description,direction} = roadEventText(event,language);
-  const source = event.source ? link(roadSource(event.source,language),event.sourceUrl) : '';
+  const fromChp = /^CHP\b/i.test(event.source ?? '');
+  const sourceLabel = fromChp ? tr('CHP 官方通报','Official CHP report') : roadSource(event.source,language);
+  const source = sourceLabel ? link(sourceLabel,event.sourceUrl) : '';
   const lastChange = timeLabel(event.updatedAt);
   const checked = timeLabel(event.verifiedAt ?? event.checkedAt);
   const parts = [source,lastChange ? `${event.timestampKind==='feed-retrieved' ? tr('来源抓取','Source retrieved') : tr('来源更新','Source updated')} ${lastChange}` : '',
     checked && checked !== lastChange ? `${tr('核对','Checked')} ${checked}` : '',
     event.noticeUrl ? link(tr('Caltrans 官方原文','Original Caltrans notice'),event.noticeUrl) : '',
     event.checkpointUrl ? link(tr('QuickMap 检查点','QuickMap checkpoint'),event.checkpointUrl) : ''].filter(Boolean);
-  const label = [eventKinds()[event.kind],event.highway,title,event.level,direction].filter(Boolean).join(' · ');
+  const kind = fromChp && event.kind === 'accident' ? tr('路况事件','Road incident') : eventKinds()[event.kind];
+  const label = [kind,event.highway,title,event.level,direction].filter(Boolean).join(' · ');
   const hasDescription = description && description !== title;
-  const originalOnly = language === 'zh' && hasDescription && description === event.description && /[a-z]/i.test(description) && !/\p{Script=Han}/u.test(description);
+  const originalOnly = !fromChp && language === 'zh' && hasDescription && description === event.description && /[a-z]/i.test(description) && !/\p{Script=Han}/u.test(description);
   const original = language === 'zh' && includeDescription && (originalOnly || title !== (event.title ?? '') || description !== (event.description ?? '') || direction !== (event.direction ?? ''))
     ? `<details><summary>查看英文原文</summary><p lang="en">${h([event.title,event.direction,event.description === event.title ? '' : event.description].filter(Boolean).join(' · '))}</p></details>` : '';
-  return `<li class="road-event ${event.kind==='closure'?'road-closure':''}"><strong>${h(label)}${valid(event.snowfall)?` · ${amount(event.snowfall,'snow')}`:''}</strong>${includeDescription && hasDescription && !originalOnly ? `<p>${h(description)}</p>` : ''}${original}${parts.length?`<small>${parts.join(' · ')}</small>`:''}</li>`;
+  return `<li class="road-event${event.kind==='closure'?' road-closure':event.kind==='accident'?' road-incident':''}"><strong>${h(label)}${valid(event.snowfall)?` · ${amount(event.snowfall,'snow')}`:''}</strong>${includeDescription && hasDescription && !originalOnly ? `<p>${h(description)}</p>` : ''}${original}${parts.length?`<small>${parts.join(' · ')}</small>`:''}</li>`;
 }
 
 function renderHeader() {
@@ -125,14 +131,13 @@ function renderVerdict() {
   const roadsMissing = !state?.roads?.data;
   const roadStale = !roadsMissing && stale(state.roads,.75);
   const original = verdict?.status;
-  const activeSevereStorm = (verdict?.evidence ?? []).some(event=>event.kind === 'storm' && /blizzard warning|snow squall warning|ice storm warning/i.test(event.title) && eventIsActive(event));
-  const adjusted = (roadsMissing || roadStale) && (original === 'go' || original === 'stop' && !activeSevereStorm);
+  const otherStop = (verdict?.evidence ?? []).some(event=>eventIsActive(event) && (event.kind === 'storm' && /blizzard warning|snow squall warning|ice storm warning/i.test(event.title) || event.kind === 'closure' && /^CHP\b/.test(event.source ?? '')));
+  const adjusted = (roadsMissing || roadStale) && (original === 'go' || original === 'stop' && !otherStop);
   const status = adjusted ? 'caution' : original ?? 'setup';
   const labels = {go:tr('可以出发','Go'),caution:tr('谨慎出发','Use caution'),stop:tr('不建议出发','Do not depart'),setup:tr('出发判决暂无数据','Departure verdict unavailable')};
   const gaps = [];
   if (roadStale) gaps.push(tr('路况快照已过期，出门前请刷新并核对官方通报。','The road snapshot is stale. Refresh and check official notices before leaving.'));
   if (roadsMissing) gaps.push(tr('实时路况暂无数据。','Live road conditions are unavailable.'));
-  const districts=(verdict?.chainDistricts??[]).join(', ');
   const knownGaps = {
     roads:tr('部分去程路况来源尚未核实。','Some outbound road sources remain unverified.'),
     roadsMissing:tr('实时路况暂无数据。','Live road conditions are unavailable.'),
@@ -140,7 +145,6 @@ function renderVerdict() {
     roadsCoverage:tr('部分路况来源暂无覆盖。','Some road sources have incomplete coverage.'),
     roadsFetch:tr('部分路况来源未能刷新。','Some road sources did not refresh.'),
     roadCoverage:tr('部分路况来源暂无覆盖。','Some road sources have incomplete coverage.'),
-    roadChainNotPublished:tr(`Caltrans 第 ${districts} 区未发布链条检查点数据。`,`Caltrans district ${districts} does not publish chain-checkpoint data.`),
     roadsPartial:tr('部分路况来源未能核对，详情见路况板块。','Some road sources could not be checked. See the road conditions section.'),
     routeWeather:tr('沿途天气来自抽样点，公路其余区间的天气可能不同。','Weather is sampled at points along the route. Conditions between them may differ.'),
     routeScope:tr('去程覆盖主干公路。','Monitoring covers outbound main highways.'),
@@ -174,54 +178,48 @@ function incidentMap(segment) {
   return link(tr('在 QuickMap 查看这段路的 CHP 实时通报','View live CHP reports near this segment in QuickMap'),`${quickMap}?${query}`);
 }
 
-function chainSummary(segments,snapshot,current,returning) {
-  const heading=`<h3>${tr('链条管制','Traction controls')}</h3>`;
-  const id = returning ? 'returnChainSummary' : 'roadChainSummary';
-  if(!snapshot?.data) return `<div class="panel" id="${id}">${heading}${stamps(snapshot,.75)}${empty(tr('点右上角「刷新」获取链条检查点。','Tap Refresh to load chain checkpoints.'))}</div>`;
-  const districts=[...new Set(segments.filter(s=>s.coverage?.chainControls==='notPublished').map(s=>s.district).filter(Boolean))].join(', ');
+function restrictionGroups(checks) {
   const groups=new Map();
-  for(const s of segments) for(const event of s.events??[]) {
-    if(event.kind!=='restriction'||!eventIsActive(event))continue;
-    const key=JSON.stringify([s.highway,event.level,event.direction,event.noticeUrl]);
-    const group=groups.get(key)??{highway:s.highway,level:event.level,direction:event.direction,notice:event.noticeUrl,checkpoints:new Map()};
-    group.checkpoints.set(event.recordId??event.id??`${event.lat},${event.lon}`,event);
-    groups.set(key,group);
+  for (const event of checks) {
+    const key=JSON.stringify([event.level,event.direction,event.noticeUrl]);
+    if (!groups.has(key)) groups.set(key,new Map());
+    groups.get(key).set(event.recordId??event.id,event);
   }
-  const checks=[...groups.values()].map(({highway,level,direction,notice,checkpoints})=>{
-    const count=checkpoints.size;
-    const title=[highway,level,roadDirection(direction,language),tr(`${count} 个检查点`,`${count} checkpoint${count===1?'':'s'}`)].filter(Boolean).join(' · ');
-    return `<details><summary>${h(title)}</summary>${notice?`<p>${link(tr('查看这条公路的 Caltrans 通报','Read the Caltrans highway bulletin'),notice)}</p>`:''}<div class="restriction-scroll" tabindex="0" role="region" aria-label="${tr('管制检查点','Traction checkpoints')}"><ul class="road-events">${[...checkpoints.values()].map(event=>eventRow({...event,noticeUrl:null},true)).join('')}</ul></div></details>`;
+  return [...groups.values()].map(group=>{
+    const records=[...group.values()];
+    const [first]=records;
+    if (records.length===1) return eventRow(first,true);
+    const title=[tr('链条管制','Traction control'),first.level,roadDirection(first.direction,language),tr(`${records.length} 个检查点`,`${records.length} checkpoints`)].filter(Boolean).join(' · ');
+    const bulletin=first.noticeUrl?link(tr('Caltrans 官方通报','Official Caltrans bulletin'),first.noticeUrl):'';
+    return `<li class="road-event restriction"><p><strong>${h(title)}</strong></p>${bulletin?`<small>${bulletin}</small>`:''}<details><summary>${tr('查看各检查点','View checkpoints')}</summary><div class="restriction-scroll" tabindex="0" role="region" aria-label="${tr('管制检查点','Traction checkpoints')}"><ul class="road-events">${records.map(event=>eventRow({...event,noticeUrl:null},true)).join('')}</ul></div></details></li>`;
   }).join('');
-  const available=segments.some(s=>s.coverage?.chainControls==='available');
-  const gap=segments.some(s=>s.coverage?.chainControls==='unavailable'||!s.coverage);
-  const noMatches=available?tr('已抓取的检查点中，未查到路线内的管制。','No restrictions were found in the fetched checkpoints along the route.'):
-    tr('本次没有可显示的链条检查点记录。','No checkpoint records are available for this refresh.');
-  return `<div class="panel" id="${id}">${heading}${!current?stamps(snapshot,.75):''}${checks||`<p>${h(noMatches)}</p>`}${districts?`<p class="muted source-line">${h(tr(`Caltrans 第 ${districts} 区没有发布公开链条检查点数据。`,`Caltrans does not publish a public chain-checkpoint feed for district ${districts}.`))} ${link(tr('查看发布范围','Check feed coverage'),'https://cwwp2.dot.ca.gov/documentation/cc/cc-district-reporting-matrix.html')}</p>`:''}${gap?`<p class="muted source-line">${tr('部分区段本次未能取得检查点数据。','Some checkpoint feeds were unavailable for this refresh.')} ${link('Caltrans QuickMap',quickMap)}</p>`:''}</div>`;
 }
 
 function renderRoadCard(segment) {
-  const groups = kind => (segment.events ?? []).filter(event => event.kind === kind);
-  const checks = groups('restriction');
-  const closures = groups('closure');
-  const incidents = groups('accident');
-  const work = [...groups('construction'),...groups('advisory')];
-  const chainAvailable = segment.coverage?.chainControls === 'available' || (!segment.coverage && segment.status === 'ok');
-  const chainText = segment.coverage?.chainControls === 'notPublished' ? tr('本区未发布检查点数据','District does not publish checkpoint data') : chainAvailable ? tr('未查到已发布管制','No posted restrictions found') : mdash();
-  const incidentsKnown = segment.coverage?.incidents === 'available';
-  const incidentRow = incidents.length || incidentsKnown
-    ? `<details><summary>${tr('实时事件','Live incidents')} · ${incidents.length}</summary>${incidents.length?`<ul class="road-events">${incidents.map(event=>eventRow(event,true)).join('')}</ul>`:`<p>${tr('未查到区间内的 CHP 通报','No matching CHP reports')}</p>`}</details>`
-    : `<p class="source-line">${incidentMap(segment)}</p>`;
+  const critical = segment.critical ?? [];
+  const primary = critical.filter(event=>event.kind!=='restriction').map(event=>eventRow(event,true)).join('');
+  const checks = restrictionGroups(critical.filter(event=>event.kind==='restriction'));
+  const work = (segment.events ?? []).filter(event=>event.kind==='construction' && event.active!==false);
   const cameras = segment.cameras ?? [];
-  const official = [roadNotice(segment.highway),link('Caltrans QuickMap',quickMap)].filter(Boolean);
+  const official = [roadNotice(segment.highway),incidentMap(segment)].filter(Boolean);
   return `<article class="panel route-card"><h3>${h(segmentName(segment))}</h3>
     ${segment.direction?`<p class="muted">${h(roadDirection(segment.direction,language))}</p>`:''}
-    <p class="muted source-line">${official.join(' · ')}${segment.updatedAt?` · ${tr('抓取','Fetched')} ${timeLabel(segment.updatedAt)}`:''}</p>
-    ${closures.length?`<ul class="road-events">${closures.map(event=>eventRow(event,true)).join('')}</ul>`:''}
-    ${checks.length?`<details><summary>${tr('链条管制','Traction control')} · ${h([...new Set(checks.map(item=>item.level).filter(Boolean))].join(' / '))} · ${checks.length}</summary><ul class="road-events">${checks.map(event=>eventRow(event,true)).join('')}</ul></details>`:`<p>${tr('链条管制','Traction control')} · ${h(chainText)}</p>`}
-    ${incidentRow}
-    ${work.length?`<details><summary>${tr('施工与通报','Roadwork and advisories')} · ${work.length}</summary><ul class="road-events">${work.map(event=>eventRow(event,true)).join('')}</ul></details>`:''}
-    ${cameras.length?`<details><summary>${tr('沿途摄像头','Road cameras')} · ${cameras.length}</summary><ul class="camera-list">${cameras.map(camera=>`<li>${cameraLink(camera)}${camera.updatedAt?` <small>· ${timeLabel(camera.updatedAt)}</small>`:''}</li>`).join('')}</ul></details>`:`<p class="muted">${tr('沿途摄像头','Road cameras')} · ${h(mdash())}</p>`}
+    ${critical.length?`<div class="road-critical"><h4>${tr('当前关键通报','Current alerts')}</h4><ul class="road-events">${primary}${checks}</ul></div>`:''}
+    ${work.length?`<details><summary>${tr('施工','Roadwork')} · ${work.length}</summary><ul class="road-events">${work.map(event=>eventRow(event,true)).join('')}</ul></details>`:''}
+    ${cameras.length?`<details><summary>${tr('沿途摄像头','Road cameras')} · ${cameras.length}</summary><ul class="camera-list">${cameras.map(camera=>`<li>${cameraLink(camera)}${camera.updatedAt?` <small>· ${timeLabel(camera.updatedAt)}</small>`:''}</li>`).join('')}</ul></details>`:''}
+    <p class="muted source-line">${official.join(' · ')}</p>
   </article>`;
+}
+
+function roadSources(road, chpLayer) {
+  const checked = timeLabel(chpLayer.data?.fetchedAt);
+  const published = timeLabel(chpLayer.data?.sourceUpdatedAt);
+  const chpTimes = checked && published
+    ? `CHP · ${tr('来源更新','Source updated')} ${published} · ${tr('采集','Collected')} ${checked}`
+    : tr('CHP 快照暂不可用。','The CHP snapshot is unavailable.');
+  const staleChp = chpLayer.stale && chpLayer.data ? `<span class="badge stale">${tr('旧快照','Stale snapshot')}</span> ` : '';
+  const status = chpLayer.stale ? tr(' · CHP 待核对',' · CHP not verified') : '';
+  return `<details class="panel"><summary>${tr('官方来源与更新时间','Official sources and update times')}${status}</summary>${stamps(road,.75)}<p class="muted source-line">${staleChp}${chpTimes}</p><div class="actions">${link('Caltrans QuickMap',quickMap)} ${link(tr('CHP 实时通报','Live CHP reports'),chp)} ${link(tr('CA-108 官方通报','Official CA-108 bulletin'),`${stateRoute}108`)}</div></details>`;
 }
 
 function renderRoads() {
@@ -239,18 +237,25 @@ function renderRoads() {
   const reported = snapshot?.data?.segments ?? [];
   const outbound = state?.profile?.segments ?? [];
   const configured = returning ? reverseSegments(outbound) : outbound;
-  const key = segment => JSON.stringify([segment.highway,segment.start,segment.end,segment.direction]);
-  const reports = new Map(reported.map(segment=>[key(segment),segment]));
-  const segments = configured.length ? configured.map(segment=>reports.get(key(segment)) ?? segment) : reported;
+  const reports = new Map(reported.map(segment=>[segmentKey(segment),segment]));
   const current = !stale(snapshot,.75);
-  const closureEvents = segments.flatMap(segment=>(segment.events ?? []).filter(event=>event.kind==='closure' && eventIsActive(event)).map(event=>({...event,highway:segment.highway})));
-  const allChecked = current && segments.length && segments.every(segment=>segment.coverage?.closures==='available' || segment.status==='ok');
-  const closureLabel = allChecked ? tr('未查到监控区间内的全封闭通报','No full closures found on the monitored segments') : mdash();
+  const chpLayer = chpSnapshot();
+  const liveChp = chpLayer.stale ? [] : chpSegments(chpLayer,returning);
+  const chpReports = new Map(liveChp.map(segment=>[segmentKey(segment),segment.events]));
+  const segments = (configured.length ? configured : reported).map(item=>{
+    const key = segmentKey(item);
+    const report = reports.get(key) ?? item;
+    const roadEvents = current ? (report.events ?? []) : [];
+    const chpEvents = chpReports.get(key) ?? [];
+    const critical = [...roadEvents,...chpEvents].filter(event=>['closure','restriction','accident'].includes(event.kind) && eventIsActive(event) && !event.roadClear);
+    critical.sort((a,b)=>eventOrder[a.kind]-eventOrder[b.kind]);
+    return {...report,events:roadEvents,critical};
+  });
   const map = roadMap(configured,segments,language);
   const title = returning ? tr('回程路况','Return road conditions') : tr('去程路况','Outbound road conditions');
   const corridor = returning ? tr('Dodge Ridge → Santa Clara · 沿同一主干公路范围反向核对。匝道与地方道路没有独立监控。','Dodge Ridge → Santa Clara · The same main highway sections are checked in reverse. Ramps and local roads have no separate coverage.') : 'Santa Clara → Dodge Ridge';
   const scope = returning ? tr('CA‑108 回程从 Pinecrest Lake Road 交汇处向西监控。Caltrans 公路通报覆盖全线。','The CA‑108 return check runs west from Pinecrest Lake Road. Caltrans highway bulletins cover the full highway.') : tr('CA‑108 监控到 Pinecrest Lake Road 转弯口为止。Caltrans 公路通报覆盖全线。','CA‑108 monitoring ends at the Pinecrest Lake Road turnoff. Caltrans highway bulletins cover the full highway.');
-  root.innerHTML = `<div class="section-head section-heading"><div><h2>${h(title)}</h2><p class="muted">${h(corridor)}</p></div></div><div class="panel closure-panel"><h3>${current?tr('当前封闭','Current closures'):tr('封闭通报','Closure notices')}</h3>${stamps(snapshot,.75)}${closureEvents.length?`<ul class="road-events">${closureEvents.map(event=>eventRow(event,true)).join('')}</ul>`:empty(closureLabel)}<div class="actions">${link('Caltrans QuickMap',quickMap)} ${link(tr('CHP 实时事故','CHP live incidents'),chp)} ${link(tr('CA-108 官方通报','Official CA-108 bulletin'),`${stateRoute}108`)}</div></div>${chainSummary(segments,snapshot,current,returning)}<div class="panel">${map}</div><div id="${returning?'returnMapRoadCard':'mapRoadCard'}" class="map-road-card" role="region" aria-label="${h(tr('所选路段','Selected segment'))}" hidden></div>${segments.length?`<details class="panel public-road-list"><summary>${tr('全部监控路段','All monitored segments')} <span>${segments.length}</span></summary>${segments.map(renderRoadCard).join('')}</details>`:empty(tr('暂无监控路段','No monitored segments are available'))}<div class="panel"><p>${tr('车速与拥堵','Traffic speed and congestion')} · ${h(mdash())}</p><p class="muted source-line">${h(scope)}</p></div>`;
+  root.innerHTML = `<div class="section-head section-heading"><div><h2>${h(title)}</h2><p class="muted">${h(corridor)}</p></div></div><div class="panel">${map}</div><div id="${returning?'returnMapRoadCard':'mapRoadCard'}" class="map-road-card" role="region" aria-label="${h(tr('所选路段','Selected segment'))}" hidden></div>${segments.length?`<details class="panel public-road-list"><summary>${tr('全部监控路段','All monitored segments')} <span>${segments.length}</span></summary>${segments.map(renderRoadCard).join('')}</details>`:empty(tr('暂无监控路段','No monitored segments are available'))}${roadSources(snapshot,chpLayer)}<p class="muted source-line">${h(scope)}</p>`;
   const card = root.querySelector('.map-road-card');
   const select = index => {
     selectedRoad[id] = index;
@@ -301,15 +306,30 @@ function openForecast(date) {
   $('forecastDialog').showModal();
 }
 
-function render() { renderHeader(); renderVerdict(); renderRoads(); renderWeather(); }
+function freshness() {
+  return [stale(state?.roads,.75),stale(state?.returnRoads,.75),chpSnapshot().stale].join('/');
+}
+
+function render() {
+  renderHeader();
+  renderVerdict();
+  renderRoads();
+  renderWeather();
+  renderedFreshness = freshness();
+}
 
 async function update(manual=false) {
   if (busy) return;
   busy = true;
+  lastRefreshStarted = Date.now();
   loadFailed = false;
   renderHeader();
   try {
-    const next = await (manual ? refreshDashboard() : loadDashboard());
+    if (!manual) {
+      state = loadDashboard();
+      render();
+    }
+    const next = await (manual ? refreshDashboard() : refreshRoadLayers());
     if (!next || !next.profile) throw new Error('Dashboard data unavailable');
     state = next;
   } catch {
@@ -324,6 +344,15 @@ async function update(manual=false) {
 $('language').addEventListener('click',()=>{language = tr('en','zh');writePref('ski-pages-language',language);render();});
 $('units').addEventListener('click',()=>{imperial = !imperial;writePref('ski-pages-units',imperial?'imperial':'metric');renderHeader();renderVerdict();renderWeather();});
 $('refresh').addEventListener('click',()=>update(true));
+document.addEventListener('visibilitychange',()=>{
+  if (!document.hidden && Date.now()-lastRefreshStarted>180_000) void update();
+});
+setInterval(()=>{
+  if (!document.hidden && !busy && state && renderedFreshness!==freshness()) {
+    state=loadDashboard();
+    render();
+  }
+},60_000);
 function scrollToRoadView() {
   if (location.hash === `#${roadView}`) $(roadView).scrollIntoView();
 }

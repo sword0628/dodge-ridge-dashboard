@@ -319,30 +319,77 @@ function kmlField(body, tag) {
   return new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i').exec(body)?.[1]?.trim() ?? '';
 }
 
+function chpCategory(title, location, style) {
+  if (style === '#full-closure') {
+    const ramp = /\b(?:onr|ofr|con|connector|on[- ]?ramp|off[- ]?ramp)\b/i.test(location);
+    return ramp ? 'ramp-closure' : 'closure';
+  }
+  if (/^(?:1179|118[0-3]|20001|20002)-/i.test(title)) return 'collision';
+  if (/^(?:1125A?-|SLIDE-)|\b(?:traffic hazard|disabled vehicle)\b/i.test(title)) return 'hazard';
+  if (/^FLOOD-.*\broadway flooding\b/i.test(title)) return 'flood';
+  if (/^SPINOUT\b/i.test(title)) return 'spinout';
+  if (/^(?:CFIRE|FIRE)-/i.test(title)) return 'fire';
+  return null;
+}
+
+function chpRoadClearAt(notes, verifiedAt) {
+  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const stamp = /^(\w{3})\s+(\d{1,2})\s+(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AP])M\s*\[(\d+)\]\s*(.+)$/i;
+  const cleared = /^(?:[A-Z]\d{1,3}-\d{1,4}\s+)?(?:(?:RDWY|ROADWAY)\s+(?:IS\s+)?(?:CLR|CLEAR)(?:\s+(?:ON|TO)\s+(?:THE\s+)?(?:RHS|RIGHT SHOULDER)(?:\s+NOW)?)?|ALL\s+(?:LNS|LANES)\s+(?:ARE\s+)?(?:CLR|CLEAR|OPEN))[. ]*(?:\[SHARED\])?$/i;
+  const blockage = /\b(?:BLK?ING|BLOCK(?:ING|ED))\s+(?:#|(?:ALL\s+)?(?:RDWY|ROADWAY|LNS?|LANES?)\b)|\b(?:RDWY|ROADWAY|LNS?|LANES?)\s+(?:(?:IS|ARE)\s+)?(?:BLOCKED|CLOSED)\b/i;
+  const pad = value => String(value).padStart(2, '0');
+  const updates = notes.split(/<br\s*\/?>/i).flatMap(line => {
+    const match = stamp.exec(xmlText(line));
+    if (!match) return [];
+    const [, month, day, year, hour, minute, second = '00', meridiem, index, message] = match;
+    const monthNumber = monthNames.findIndex(name => name.toLowerCase() === month.toLowerCase()) + 1;
+    const hour24 = Number(hour) % 12 + (meridiem.toUpperCase() === 'P' ? 12 : 0);
+    const time = localInstant(`${year}-${pad(monthNumber)}-${pad(day)}`, `${pad(hour24)}:${minute}:${second}`);
+    if (!time || Date.parse(time) > Date.parse(verifiedAt) + 60_000) return [];
+    const clear = cleared.test(message);
+    return clear || blockage.test(message) ? [{time,index:Number(index),clear}] : [];
+  });
+  const latest = updates.sort((a,b) => b.time.localeCompare(a.time) || b.index-a.index)[0];
+  return latest?.clear ? latest.time : null;
+}
+
 function chpEvents(segment, feed, line) {
   if (!feed || line.length < 2) return [];
-  return Array.from(feed.text.matchAll(/<Placemark\b[^>]*>([\s\S]*?)<\/Placemark>/gi)).flatMap((match, index) => {
+  return Array.from(feed.text.matchAll(/<Placemark\b[^>]*>([\s\S]*?)<\/Placemark>/gi)).flatMap(match => {
     const body = match[1];
     const [lon, lat] = kmlField(body, 'coordinates').split(',');
     const p = point(lat, lon);
     if (!nearLine(p, line, 0.12)) return [];
     const html = kmlField(body, 'description');
-    const title = xmlText(/<h2\b[^>]*>([\s\S]*?)<\/h2>/i.exec(html)?.[1] ?? kmlField(body, 'name'));
-    const location = xmlText(/<p class="iw-text">([\s\S]*?)<\/p>/i.exec(html)?.[1] ?? '');
-    const roadPattern = /\b((?:I|US|SR|CA|HWY|INTERSTATE|HIGHWAY|ROUTE)[\s-]*\d{1,4})(?:\s*((?:NORTH|SOUTH|EAST|WEST)(?:[ -]?BOUND)?|[NSEW](?:[\/.-]?B)?)\b(?!\s*(?:\/\s*O\b|\bOF\b)))?\b/i;
-    const road = roadPattern.exec(location) ?? roadPattern.exec(title);
-    if (!road || !matchedDirection(segment,road[1],road[2]).relevant) return [];
-    const style = kmlField(body, 'styleUrl');
-    const officialClosure = style === '#full-closure';
-    const incidentId = /CHP Incident\s+([0-9A-Z]+)/i.exec(html)?.[1];
+    const headline = xmlText(/<h2\b[^>]*>([\s\S]*?)<\/h2>/i.exec(html)?.[1] ?? '');
+    const title = /^[\w &.,/()+'’:-]{1,120}$/.test(headline) ? headline : 'CHP traffic incident';
+    const paragraphs = Array.from(html.matchAll(/<p class="iw-text">([\s\S]*?)<\/p>/gi), match => match[1]);
+    const summary = xmlText(paragraphs[0]);
+    const location = summary.replace(/^\w{3} \d{1,2} \d{4} \d{1,2}:\d{2}[AP]M\s*·\s*/i, '');
+    const category = chpCategory(title,location,kmlField(body, 'styleUrl'));
+    if (!category) return [];
+    const roadPattern = /\b((?:I|US|SR|CA|HWY|INTERSTATE|HIGHWAY|ROUTE)[\s-]*\d{1,4})(?:\s*((?:NORTH|SOUTH|EAST|WEST)(?:[ -]?BOUND)?|[NSEW](?:[\/.-]?B)?)\b(?!\s*(?:\/\s*O\b|\bOF\b)))?\b/ig;
+    const references = [...location.matchAll(roadPattern)].filter(([, road]) => matchedDirection(segment,road,null).relevant);
+    const explicit = references.filter(([, , direction]) => direction);
+    const matched = (explicit.length ? explicit : references).find(([, road, direction]) => matchedDirection(segment,road,direction).relevant);
+    if (!matched) return [];
+    const incidentId = /CHP Incident\s+([0-9A-Z]{8,22})\b/i.exec(html)?.[1];
+    if (!incidentId) return [];
     const stamp = /Last updated:\s*<strong>(\d{1,2})\/(\d{1,2})\/(\d{4})<\/strong>\s*(\d{1,2}):(\d{2})\s*([ap])m/i.exec(html);
     const pad = value => String(value).padStart(2, '0');
     const hour = stamp && Number(stamp[4]) % 12 + (stamp[6].toLowerCase() === 'p' ? 12 : 0);
     const updatedAt = stamp && localInstant(`${stamp[3]}-${pad(stamp[1])}-${pad(stamp[2])}`, `${pad(hour)}:${stamp[5]}:00`);
-    return [{id: incidentId ? `chp-${incidentId}` : `chp-${lat}-${lon}-${title || index}`, kind: officialClosure ? 'closure' : 'accident',
-      title: title || 'CHP 事件', description: location, ...p, start: segment.start, end: segment.end, direction: road[2], active: true,
-      updatedAt: updatedAt ?? feed.fetchedAt, timestampKind: updatedAt ? 'source-reported' : 'feed-retrieved', source: 'CHP · Caltrans QuickMap', sourceUrl: QUICKMAP}];
+    const roadClearAt = chpRoadClearAt(paragraphs[1] ?? '', updatedAt ?? feed.sourceUpdatedAt);
+    return [{id: `chp-${incidentId}`, recordId:incidentId, kind:category === 'closure' ? 'closure' : 'accident',category,
+      title, description:summary.slice(0,200), ...p, start: segment.start, end: segment.end, direction: matched[2] ?? segment.direction,
+      active: true, updatedAt: updatedAt ?? feed.sourceUpdatedAt, timestampKind:'source-reported', source:'CHP · Caltrans QuickMap',
+      sourceUrl:`https://m.chp.ca.gov/incident.aspx?id=${incidentId}`, ...(roadClearAt ? {roadClear:true,roadClearAt} : {})}];
   });
+}
+
+export function scopeChpSegments(segments, feed) {
+  return segments.map(segment => ({highway:segment.highway,start:segment.start,end:segment.end,direction:segment.direction,
+    events:chpEvents(segment,feed,lineFor(segment))}));
 }
 
 const cleanState = state => (String(state ?? '').trim().toUpperCase().replace(/^US[- ]|^CA[- ]/, ''));

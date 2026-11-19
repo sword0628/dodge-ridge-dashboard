@@ -31,7 +31,7 @@ function departureWindow(now, zone, clockTime) {
   return start ?? now;
 }
 
-export function tripVerdict(profile, roadSnap, routeSnap, now = Date.now()) {
+export function tripVerdict(profile, roadSnap, routeSnap, now = Date.now(), liveChp = null, chpCheckedAt) {
   const route = profile.segments.filter(s => s.highway && s.start && s.end);
   const destination = profile.dayTrip ? profile.resort : profile.lodging;
   const result = {status:'setup', evidence:[], uncertain:[], route:route.map(s=>s.highway), destination};
@@ -65,7 +65,7 @@ export function tripVerdict(profile, roadSnap, routeSnap, now = Date.now()) {
       result.chainDistricts=[...new Set(missingChecks.map(s=>s.district).filter(Boolean))].sort((a,b)=>a-b);
     }
     if (roadSegments.length!==route.length||roadSegments.some(s=>s.coverage?
-      s.coverage.closures!=='available'||s.coverage.incidents!=='available'||s.coverage.chainControls==='unavailable':s.status!=='ok')) {
+      s.coverage.closures!=='available'||(!liveChp&&s.coverage.incidents!=='available')||s.coverage.chainControls==='unavailable':s.status!=='ok')) {
       roadGap('roadsPartial');
     }
   }
@@ -73,12 +73,16 @@ export function tripVerdict(profile, roadSnap, routeSnap, now = Date.now()) {
     result.uncertain.push('routeWeather');
     flag('caution');
   }
-  if (roadFresh) for (const segment of roadSegments) for (const e of segment.events ?? []) {
-    if (!isActive(e) || e.kind === 'advisory' || e.kind === 'construction') continue;
-    if (e.kind === 'closure' || restricted(e) >= 3) flag('stop');
-    else flag('caution');
-    result.evidence.push({...e, highway:segment.highway, checkedAt:roadSnap.savedAt});
-  }
+  const addEvents = (segments, checkedAt) => {
+    for (const segment of segments) for (const e of segment.events ?? []) {
+      if (!isActive(e) || e.active === false || e.roadClear || e.kind === 'advisory' || e.kind === 'construction') continue;
+      if (e.kind === 'closure' || restricted(e) >= 3) flag('stop');
+      else flag('caution');
+      result.evidence.push({...e, highway:segment.highway, checkedAt});
+    }
+  };
+  if (roadFresh) addEvents(roadSegments,roadSnap.savedAt);
+  if (liveChp) addEvents(liveChp,chpCheckedAt);
   if (weatherFresh) {
     for (const e of routeSnap.data.alerts ?? []) {
       if ((e.start && Date.parse(e.start) > end) || (e.end && Date.parse(e.end) <= start)) continue;

@@ -271,6 +271,9 @@ details[open] > summary { margin-bottom: .45rem; }
 .road-event a:hover { color: var(--deep); }
 .road-event.closure { background: var(--red-pale); border-color: #b86457; }
 .road-event.restriction { background: var(--amber-pale); border-color: #be9a51; }
+.road-critical h4 { margin-bottom: .35rem; }
+.road-critical .road-closure { background: var(--red-pale); border-color: #b53537; }
+.road-critical .road-incident { background: #fff4e9; border-color: #b95711; }
 .camera-list li { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem; margin: .4rem 0; }
 .road-links .actions { margin-block: .5rem; }
 .map { min-height: 280px; background: #e2ede5; border: 1px solid var(--line); border-radius: 11px; overflow: hidden; }
