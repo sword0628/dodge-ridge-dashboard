@@ -1,12 +1,12 @@
-import {loadDashboard, refreshDashboard, refreshDriveForecast, refreshRoadLayers} from './page-data.js?v=9';
-import {bestSnow, dateKey, localDays, quant, valid} from './forecast.js';
-import {renderRouteTowns} from './route-towns-view.js';
+import {loadDashboard, refreshDashboard, refreshDriveForecast, refreshRoadLayers} from './page-data.js?v=10';
+import {bestSnow, dateKey, forecastLength, localDays, quant, valid} from './forecast.js?v=10';
+import {renderRouteTowns} from './route-towns-view.js?v=10';
 import {bindRoadMap, roadMap} from './road-map.js?v=7';
 import {roadDirection, roadEventText, roadLocation, roadSource} from './road-locale.js';
 import {reverseSegments} from './return-route.js';
 import {chpSegments,chpSnapshot,segmentKey} from './chp-snapshot.js';
-import {driveForecastMaxAge,driveOutlook,upcomingDriveDates} from './drive-weather.js';
-import {renderDriveWeather} from './drive-weather-view.js';
+import {driveForecastMaxAge,driveOutlook,upcomingDriveDates} from './drive-weather.js?v=10';
+import {renderDriveWeather} from './drive-weather-view.js?v=10';
 
 const $ = id => document.getElementById(id);
 const h = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -344,7 +344,7 @@ function renderWeather() {
   const townView = townSnapshot && renderRouteTowns({...townSnapshot,stale:stale(townSnapshot,26)},{language,imperial,timeZone,now});
   const driveView = renderDriveWeather(driveOutlook(townSnapshot,state?.routeWeather,{timeZone,now}),
     {language,imperial,selectedDate:selectedDriveDate,timeZone,now});
-  root.innerHTML = `${heading(tr('天气与降雪','Weather & snow'))}${driveView}<div class="grid weather-points">${points}</div><div class="panel"><h3>${pointName(point)} · ${tr('未来 7 天','Next 7 days')}</h3>${stamps(snapshot,26)}<div class="stats"><div><span>${tr('7 天累计降雪','7-day snowfall')}</span><strong>${amount(total,'snow')}</strong></div><div><span>${tr('预计降雪最多','Snowiest day')}</span><strong>${best?dayLabel(best.date):h(mdash())}</strong></div></div>${forecastTable}${discrepancies.length?`<details><summary>${tr('来源间降雪数据有分歧','Sources disagree about snowfall')}</summary><ul>${discrepancies.join('')}</ul></details>`:''}<div class="actions">${link(tr('雪场官方摄像头','Official resort webcams'),resortCams)} ${link(tr('雪场运营状态','Official resort status'),'https://dodgeridge.com/snow-report/')} ${link(tr('NWS 雪水比说明','NWS snow ratio product'),snowRatioProduct)}</div></div>${townView || ''}`;
+  root.innerHTML = `${heading(tr('天气与降雪','Weather & snow'))}${driveView}<div class="grid weather-points">${points}</div><div class="panel"><h3>${pointName(point)} · ${tr(`未来 ${forecastLength} 天`,`Next ${forecastLength} days`)}</h3>${stamps(snapshot,26)}<div class="stats"><div><span>${tr(`${forecastLength} 天累计降雪`,`${forecastLength}-day snowfall`)}</span><strong>${amount(total,'snow')}</strong></div><div><span>${tr('预计降雪最多','Snowiest day')}</span><strong>${best?dayLabel(best.date):h(mdash())}</strong></div></div>${forecastTable}${discrepancies.length?`<details><summary>${tr('来源间降雪数据有分歧','Sources disagree about snowfall')}</summary><ul>${discrepancies.join('')}</ul></details>`:''}<div class="actions">${link(tr('雪场官方摄像头','Official resort webcams'),resortCams)} ${link(tr('雪场运营状态','Official resort status'),'https://dodgeridge.com/snow-report/')} ${link(tr('NWS 雪水比说明','NWS snow ratio product'),snowRatioProduct)}</div></div>${townView || ''}`;
   for (const selector of expanded) root.querySelector(selector)?.setAttribute('open','');
 }
 

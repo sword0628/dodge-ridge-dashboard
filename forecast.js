@@ -1,3 +1,4 @@
+export const forecastLength = 16;
 export const valid = Number.isFinite;
 export const dateKey = (value,zone) => new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(value));
 export const shift = (date,days) => new Date(Date.parse(`${date}T12:00:00Z`)+days*86400000).toISOString().slice(0,10);
@@ -23,7 +24,7 @@ export function localDays(rows, zone, today) {
     if (!dates.has(date)) dates.set(date,[]);
     dates.get(date).push(h);
   }
-  return Array.from({length:7},(_,i)=>{
+  return Array.from({length:forecastLength},(_,i)=>{
     const date=shift(today,i);
     return {date,...daySummary(dates.get(date)??[])};
   });

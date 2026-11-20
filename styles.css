@@ -426,6 +426,7 @@ dialog::backdrop { background: rgba(12, 36, 30, .55); }
 .drive-weather-dates button[aria-pressed="true"] {
   border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--accent-pale);
 }
+.drive-weather-dates button[data-horizon="extended"] { border-style: dashed; }
 .drive-weather-dates button time { font-weight: 740; }
 .drive-risk {
   display: inline-block; max-width: 100%; padding: .12rem .32rem; border-radius: 5px;
@@ -441,6 +442,8 @@ dialog::backdrop { background: rgba(12, 36, 30, .55); }
 }
 .drive-weather-selected h4 { color: inherit; font-size: 1.02rem; }
 .drive-weather-selected time { font-size: .82rem; }
+.drive-weather-selected p { display: flex; flex-wrap: wrap; align-items: baseline; gap: .32rem .5rem; margin: 0; }
+.drive-weather-long-range { padding: .08rem .35rem; border: 1px solid currentColor; border-radius: 4px; font-size: .72rem; }
 .drive-weather-selected[data-risk="low"] { color: #fff; background: #235d49; }
 .drive-weather-selected[data-risk="caution"] { color: #fff; background: #775019; }
 .drive-weather-selected[data-risk="high"] { color: #fff; background: #8e302d; }
@@ -476,5 +479,5 @@ dialog::backdrop { background: rgba(12, 36, 30, .55); }
 .drive-chain-levels dt { font-weight: 750; }
 .drive-chain-levels dd { margin: 0; }
 @media (min-width: 700px) {
-  .drive-weather-dates { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  .drive-weather-dates { grid-template-columns: repeat(8, minmax(0, 1fr)); }
 }

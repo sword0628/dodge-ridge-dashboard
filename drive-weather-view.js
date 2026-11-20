@@ -1,5 +1,5 @@
-import {quant} from './forecast.js';
-import {upcomingDriveDates} from './drive-weather.js';
+import {quant} from './forecast.js?v=10';
+import {upcomingDriveDates} from './drive-weather.js?v=10';
 import {roadEventText} from './road-locale.js';
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({
@@ -59,9 +59,11 @@ export function renderDriveWeather(outlook, {language='zh', imperial=false, sele
   const riskKey = key => Object.hasOwn(risk,key) ? key : 'unknown';
   const tag = key => `<span class="drive-risk" data-risk="${riskKey(key)}">${risk[riskKey(key)]}</span>`;
   const reports = new Map((outlook?.days ?? []).map(day=>[day.date,day]));
-  const days = upcomingDriveDates(now,timeZone).map(date=>
+  const instant = new Date(now).valueOf();
+  const days = upcomingDriveDates(Number.isFinite(instant)?instant:Date.now(),timeZone).map(date=>
     reports.get(date) ?? {date,risk:'unknown',complete:false,towns:[],alerts:[],reasons:[]});
   const selected = days.find(day=>day.date===selectedDate) ?? days[0];
+  const extended = days.indexOf(selected) >= 7;
   const weekday = new Intl.DateTimeFormat(locale,{weekday:'short',timeZone:'UTC'});
   const shortDate = new Intl.DateTimeFormat(locale,{month:'numeric',day:'numeric',timeZone:'UTC'});
   const fullDate = new Intl.DateTimeFormat(locale,{weekday:'long',month:'long',day:'numeric',timeZone:'UTC'});
@@ -76,10 +78,10 @@ export function renderDriveWeather(outlook, {language='zh', imperial=false, sele
   const reasonText = values => [...new Set((values ?? []).map(value=>Object.hasOwn(reasonLabels,value)?reasonLabels[value]:value).filter(Boolean))].map(escapeHtml).join(' · ');
   const snow = value => escapeHtml(quant(value,'snow',true,language,true));
   const temp = value => escapeHtml(quant(value,'temp',imperial,language,true));
-  const dates = days.map(day=>{
+  const dates = days.map((day,index)=>{
     const stamp = fromDate(day.date);
     const active = day.date===selected.date;
-    return `<button type="button" data-drive-day="${day.date}" aria-pressed="${active}" aria-controls="drive-weather-details"><span>${escapeHtml(weekday.format(stamp))}</span><time datetime="${day.date}">${escapeHtml(shortDate.format(stamp))}</time>${tag(day.risk)}</button>`;
+    return `<button type="button" data-drive-day="${day.date}"${index>=7?' data-horizon="extended" aria-describedby="drive-weather-horizon"':''} aria-pressed="${active}" aria-controls="drive-weather-status drive-weather-details"><span>${escapeHtml(weekday.format(stamp))}</span><time datetime="${day.date}">${escapeHtml(shortDate.format(stamp))}</time>${tag(day.risk)}</button>`;
   }).join('');
 
   const towns = (selected.towns ?? []).map(town=>{
@@ -116,17 +118,18 @@ export function renderDriveWeather(outlook, {language='zh', imperial=false, sele
   const focusTowns = concernedTowns.slice(0,3).map(town=>escapeHtml(town.name)).join(tr('、',', '));
   const otherTowns = concernedTowns.length>3 ? tr(`等 ${concernedTowns.length} 个点位`,` and ${concernedTowns.length-3} more`) : '';
   return `<section class="panel drive-weather" aria-labelledby="drive-weather-heading">
-    <header class="drive-weather-head"><div><h3 id="drive-weather-heading">${tr('早晨驾驶展望','Morning driving outlook')}</h3><p class="muted">${tr('各点统一看加州当地 05:00–09:00，前一夜为 19:00–05:00。','All points use the same California time windows. Morning is 05:00–09:00 and the previous night is 19:00–05:00.')}</p></div>${outlook?.stale?`<span class="badge stale">${tr('旧快照','Stale snapshot')}</span>`:''}</header>
+    <header class="drive-weather-head"><div><h3 id="drive-weather-heading">${tr(`早晨驾驶展望 · ${days.length} 天`,`Morning driving outlook · ${days.length} days`)}</h3><p class="muted">${tr('各点统一看加州当地 05:00–09:00，前一夜为 19:00–05:00。','All points use the same California time windows. Morning is 05:00–09:00 and the previous night is 19:00–05:00.')}</p></div>${outlook?.stale?`<span class="badge stale">${tr('旧快照','Stale snapshot')}</span>`:''}</header>
+    <div id="drive-weather-status" class="drive-weather-selected" data-risk="${riskKey(selected.risk)}" aria-live="polite"><h4>${tr('05:00 出发','05:00 departure')} · ${risk[riskKey(selected.risk)]}</h4><p><time datetime="${selected.date}">${escapeHtml(fullDate.format(chosen))}</time>${extended?` <span class="drive-weather-long-range">${tr('远期展望','Long-range outlook')}</span>`:''}</p></div>
     <div class="drive-weather-dates" role="group" aria-label="${tr('选择出发日期','Choose a departure date')}">${dates}</div>
+    ${days.length>7?`<p id="drive-weather-horizon" class="muted drive-weather-source">${tr(`虚线日期为第 8–${days.length} 天，预报变数较大。`,`Dashed dates are days 8–${days.length}. These forecasts are more uncertain.`)}</p>`:''}
     <div id="drive-weather-details" class="drive-weather-details">
-      <div class="drive-weather-selected" data-risk="${riskKey(selected.risk)}" aria-live="polite"><h4>${tr('05:00 出发','05:00 departure')} · ${risk[riskKey(selected.risk)]}</h4><time datetime="${selected.date}">${escapeHtml(fullDate.format(chosen))}</time></div>
       ${focusTowns?`<p class="drive-weather-focus"><strong>${tr('重点留意','Points to watch')}</strong> · ${focusTowns}${otherTowns}</p>`:''}
       ${dayReason?`<p class="drive-weather-reasons">${dayReason}</p>`:''}
       ${!selected.complete&&towns?`<p class="muted">${tr('部分点位或时段资料不完整。','Some locations or hours have incomplete data.')}</p>`:''}
       ${alerts?`<div class="drive-official-alerts"><h5>${tr('NWS 路线警报','NWS alerts along the route')}</h5><ul>${alerts}</ul></div>`:''}
       ${towns?`<details class="drive-weather-town-list"><summary>${tr(`沿途 ${selected.towns.length} 个点位详情`,`Details for ${selected.towns.length} route points`)}</summary><ul class="drive-weather-towns" aria-label="${tr('沿途各城镇清晨预报','Morning forecasts by town')}">${towns}</ul></details>`:`<p class="muted">${tr('这天暂无沿途逐小时预报。','No hourly forecast along the route for this day.')}</p>`}
     </div>
-    <p class="muted drive-weather-source">${tr('雪量是点位新雪预报。实际路面和管制以官方通报及现场指示为准。','Snow amounts are forecasts of new snow at each point. Check official reports and posted instructions for road conditions and controls.')}${basis?` · ${tr('预报采集于','Forecast collected')} ${basis}`:''}</p>
+    <p class="muted drive-weather-source">${tr('05:00 出发风险是根据沿途点位预报作出的估计。雪量为预计新雪。实际路面和管制以官方通报及现场指示为准。','The 05:00 driving outlook is an estimate based on point forecasts along the route. Snow amounts show expected new snow. Check official reports and posted instructions for road conditions and controls.')}${basis?` · ${tr('预报采集于','Forecast collected')} ${basis}`:''}</p>
     ${guidance(tr)}
   </section>`;
 }

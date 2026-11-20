@@ -1,4 +1,4 @@
-import {dateKey,shift,valid} from './forecast.js';
+import {dateKey,forecastLength,shift,valid} from './forecast.js?v=10';
 
 const hour = 3_600_000;
 const inchCm = 2.54;
@@ -26,7 +26,7 @@ function localHours(timeZone) {
 export function upcomingDriveDates(now, timeZone) {
   const today = dateKey(now,timeZone);
   const first = now > localHours(timeZone)(today,'05') ? shift(today,1) : today;
-  return Array.from({length:7},(_,i)=>shift(first,i));
+  return Array.from({length:forecastLength},(_,i)=>shift(first,i));
 }
 
 function assessTown(morning, stale) {

@@ -1,10 +1,11 @@
 import {profile,points} from './itinerary.js';
 import {reverseSegments} from './return-route.js';
 import {routeTowns} from './route-towns.js';
-import {weather,roads,routeWeather,townsWeather} from './sources.js?v=9';
+import {weather,roads,routeWeather,townsWeather} from './sources.js?v=10';
 import {MIN,HOUR,fresh,tripVerdict} from './logic.js?v=6';
 import {chpSegments,chpSnapshot,refreshChpSnapshot,segmentKey} from './chp-snapshot.js';
-import {driveForecastMaxAge,upcomingDriveDates} from './drive-weather.js';
+import {driveForecastMaxAge,upcomingDriveDates} from './drive-weather.js?v=10';
+import {forecastLength} from './forecast.js?v=10';
 
 const localKey='dodge-ridge-public-snapshots-v2';
 const route={segments:profile.segments,timeZone:profile.timeZone};
@@ -137,10 +138,13 @@ export function refreshDriveForecast(){
   const lastDate = upcomingDriveDates(now,profile.timeZone).at(-1);
   const driveReady = now - Date.parse(forecast?.savedAt) <= driveForecastMaxAge
     && forecast?.data?.towns?.some(town=>town.mornings?.some(morning=>morning.date===lastDate));
+  const resortRefreshes = ['base','summit'].filter(key=>
+    !fresh(snapshots[key],'weather',now) || snapshots[key]?.data?.forecastDaysRequested!==forecastLength);
   activeDriveRefresh = (async()=>{
     await Promise.all([
       driveReady ? null : update('towns',now),
       fresh(snapshots.routeWeather,'routeWeather',now) ? null : update('routeWeather',now),
+      ...resortRefreshes.map(key=>update(key,now)),
     ]);
     persist();
     return loadDashboard();

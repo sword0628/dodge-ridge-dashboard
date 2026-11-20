@@ -4,6 +4,7 @@ const QUICKMAP = 'https://quickmap.dot.ca.gov/';
 const CWWP = 'https://cwwp2.dot.ca.gov';
 const BC = 'https://api.open511.gov.bc.ca';
 const HOUR = 3_600_000;
+const forecastDayLimit = 16;
 const DODGE_RIDGE = 'https://dodgeridge.com/';
 const iso = ms => new Date(ms).toISOString();
 const num = value => value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? null : Number(value);
@@ -32,11 +33,11 @@ async function fetchJson(url, accept) {
   return {data: await response.json(), fetchedAt: iso(Date.now()), lastModified: validTime(response.headers.get('last-modified'))};
 }
 
-async function openMeteo(places, forecastDays = 8) {
+async function openMeteo(places, forecastDays, timeZone = 'GMT') {
   const parameters = new URLSearchParams({
     latitude: places.map(p => p.lat).join(','), longitude: places.map(p => p.lon).join(','),
     hourly: 'temperature_2m,apparent_temperature,snowfall,rain,wind_speed_10m,wind_gusts_10m,freezing_level_height',
-    timezone: 'GMT', timeformat: 'unixtime', forecast_days: String(forecastDays), past_days: '1',
+    timezone: timeZone, timeformat: 'unixtime', forecast_days: String(forecastDays), past_days: '1',
     temperature_unit: 'celsius', wind_speed_unit: 'kmh', precipitation_unit: 'mm',
   });
   if (places.every(p => num(p.elevation) !== null)) parameters.set('elevation', places.map(p => p.elevation).join(','));
@@ -95,7 +96,7 @@ function officialHourly(official) {
 
 export async function weather(place) {
   if (!pointOk(place)) throw new Error('请先确认预报点经纬度。');
-  const [main, grid, ratio] = await Promise.allSettled([openMeteo([place]), nwsGrid(place), null]);
+  const [main, grid, ratio] = await Promise.allSettled([openMeteo([place], forecastDayLimit, place.timeZone ?? 'auto'), nwsGrid(place), null]);
   const official = fulfilled(grid);
   const snowRatio = fulfilled(ratio);
   const warnings = [];
@@ -134,7 +135,8 @@ export async function weather(place) {
   } else {
     warnings.push('该点当前暂无 NWS 雪水比。');
   }
-  return {...result, nws: official && {source: official.source, sourceUrl: official.sourceUrl, updatedAt: official.updatedAt, fetchedAt: official.fetchedAt},
+  return {...result, forecastDaysRequested: forecastDayLimit,
+    nws: official && {source: official.source, sourceUrl: official.sourceUrl, updatedAt: official.updatedAt, fetchedAt: official.fetchedAt},
     snowRatioSource: snowRatio && {source: snowRatio.source, sourceUrl: snowRatio.sourceUrl, updatedAt: snowRatio.updatedAt, fetchedAt: snowRatio.fetchedAt}, discrepancies, warnings};
 }
 
@@ -587,18 +589,19 @@ function townCalendar(timeZone, now = Date.now()) {
     for (let hour = start; hour < end; hour += HOUR) hours.push(hour);
     return hours;
   };
-  const days = Array.from({length: 7}, (_, i) => {
+  const days = Array.from({length: forecastDayLimit}, (_, i) => {
     const date = calendarDate(i);
     const start = atHour(date, '07'), end = atHour(date, '19');
     return {date, start, end, hours: hoursBetween(start, end)};
   });
-  const mornings = Array.from({length: 8}, (_, offset) => {
+  const mornings = Array.from({length: forecastDayLimit + 1}, (_, offset) => {
     const date = calendarDate(offset);
     const start = atHour(date, '05'), end = atHour(date, '09');
     const overnightStart = atHour(calendarDate(offset - 1), '19');
     return {date, start, end, overnightStart, hours: hoursBetween(start, end), overnightHours: hoursBetween(overnightStart, start)};
   });
-  return {days, mornings};
+  return {days, mornings, requestWindow: {start_hour: iso(mornings[0].overnightStart).slice(0, 16),
+    end_hour: iso(mornings.at(-1).end).slice(0, 16)}};
 }
 
 function townDay(day, temperatures, conditions) {
@@ -630,10 +633,11 @@ function openMeteoCondition(value) {
   return [95, 96, 97, 99].includes(code) ? 'thunder' : 'unknown';
 }
 
-function townOpenMeteoUrl(places, timeZone) {
+function townOpenMeteoUrl(places, timeZone, window) {
   const parameters = new URLSearchParams({latitude: places.map(place => place.lat).join(','), longitude: places.map(place => place.lon).join(','),
-    hourly: 'temperature_2m,weather_code,snowfall,rain,wind_gusts_10m,visibility', timezone: timeZone, timeformat: 'unixtime',
-    forecast_days: '8', past_days: '1', temperature_unit: 'celsius', precipitation_unit: 'mm', wind_speed_unit: 'kmh'});
+    hourly: 'temperature_2m,weather_code,snowfall,rain,wind_gusts_10m,visibility', timezone: window ? 'GMT' : timeZone, timeformat: 'unixtime',
+    temperature_unit: 'celsius', precipitation_unit: 'mm', wind_speed_unit: 'kmh',
+    ...(window ?? {forecast_days: String(forecastDayLimit), past_days: '1'})});
   // Towns without a supplied height keep Open-Meteo's default terrain correction.
   if (places.every(place => num(place.elevation) !== null)) parameters.set('elevation', places.map(place => num(place.elevation)).join(','));
   return `https://api.open-meteo.com/v1/forecast?${parameters}`;
@@ -647,7 +651,7 @@ function daytimeOpenMeteoCondition(codes) {
   return ['snow', 'rain', 'fog', 'cloudy', 'clear'].find(condition => conditions.has(condition)) ?? 'unknown';
 }
 
-function openMeteoTown(place, grid, calendar, response, timeZone) {
+function openMeteoTown(place, grid, calendar, response, timeZone, requestWindow) {
   const hourly = grid?.hourly;
   if (!Array.isArray(hourly?.time) || grid.hourly_units?.temperature_2m !== '°C') return null;
   const indexAt = new Map(hourly.time.map((seconds, i) => [seconds * 1000, i]));
@@ -678,7 +682,7 @@ function openMeteoTown(place, grid, calendar, response, timeZone) {
     });
   });
   if (!days.some(day => day.high !== null || day.low !== null || day.condition !== 'unknown')) return null;
-  return {id: place.id, name: place.name, days, mornings, source: 'Open-Meteo', sourceUrl: townOpenMeteoUrl([place], timeZone),
+  return {id: place.id, name: place.name, days, mornings, source: 'Open-Meteo', sourceUrl: townOpenMeteoUrl([place], timeZone, requestWindow),
     updatedAt: response.lastModified, fetchedAt: response.fetchedAt};
 }
 
@@ -779,10 +783,19 @@ export async function townsWeather(places, timeZone = 'America/Los_Angeles') {
     const heights = valid.filter(place => num(place.elevation) !== null);
     const batches = [terrain, heights].filter(group => group.length > 0);
     const results = await Promise.allSettled(batches.map(async group => {
-      const response = await fetchJson(townOpenMeteoUrl(group, timeZone));
+      // Send local window endpoints as UTC so the API's fixed timezone offset cannot shift them across DST.
+      let requestWindow = calendar.requestWindow;
+      let response;
+      try {
+        response = await fetchJson(townOpenMeteoUrl(group, timeZone, requestWindow));
+      } catch (error) {
+        if (error.status !== 400) throw error;
+        requestWindow = null;
+        response = await fetchJson(townOpenMeteoUrl(group, timeZone, requestWindow));
+      }
       const locations = Array.isArray(response.data) ? response.data : [response.data];
       if (locations.length !== group.length) throw new Error('Open-Meteo returned an unexpected number of towns.');
-      group.forEach((place, i) => forecasts.set(place, openMeteoTown(place, locations[i], calendar, response, timeZone)));
+      group.forEach((place, i) => forecasts.set(place, openMeteoTown(place, locations[i], calendar, response, timeZone, requestWindow)));
     }));
     const limited = results.find(result => result.status === 'rejected' && result.reason?.status === 429);
     if (limited) throw limited.reason;
