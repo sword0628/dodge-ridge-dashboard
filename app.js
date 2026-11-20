@@ -1,12 +1,12 @@
-import {loadDashboard, refreshDashboard, refreshDriveForecast, refreshRoadLayers} from './page-data.js?v=11';
+import {loadDashboard, refreshDashboard, refreshDriveForecast, refreshRoadLayers} from './page-data.js?v=12';
 import {bestSnow, dateKey, forecastLength, localDays, quant, valid} from './forecast.js?v=10';
 import {renderRouteTowns} from './route-towns-view.js?v=10';
 import {bindRoadMap, roadMap} from './road-map.js?v=7';
 import {roadDirection, roadEventText, roadLocation, roadSource} from './road-locale.js';
 import {reverseSegments} from './return-route.js';
 import {chpSegments,chpSnapshot,segmentKey} from './chp-snapshot.js';
-import {driveForecastMaxAge,driveOutlook,upcomingDriveDates} from './drive-weather.js?v=11';
-import {renderDriveWeather} from './drive-weather-view.js?v=11';
+import {driveForecastMaxAge,driveOutlook,todayDriveWindow} from './drive-weather.js?v=12';
+import {renderDriveWeather} from './drive-weather-view.js?v=12';
 
 const $ = id => document.getElementById(id);
 const h = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -358,9 +358,10 @@ function openForecast(date) {
 }
 
 function freshness() {
-  const driveStale = Date.now() - Date.parse(state?.routeTowns?.savedAt) > driveForecastMaxAge;
-  const firstDrive = location.hash==='#weather' ? upcomingDriveDates(Date.now(),zone())[0] : '';
-  return [stale(state?.roads,.75),stale(state?.returnRoads,.75),chpSnapshot().stale,driveStale,firstDrive].join('/');
+  const now = Date.now();
+  const driveStale = now - Date.parse(state?.routeTowns?.savedAt) > driveForecastMaxAge;
+  const today = location.hash==='#weather' ? todayDriveWindow(now,zone()) : null;
+  return [stale(state?.roads,.75),stale(state?.returnRoads,.75),chpSnapshot().stale,driveStale,today?.date,today?.phase].join('/');
 }
 
 function render() {
@@ -450,10 +451,20 @@ $('returnOverview').addEventListener('click',event=>{
 });
 $('weather').addEventListener('click',event=>{
   const button = event.target.closest('button');
-  if (button?.dataset.driveDay) {
-    selectedDriveDate = button.dataset.driveDay;
+  const todayShortcut = button?.dataset.driveToday;
+  const driveDate = todayShortcut ?? button?.dataset.driveDay;
+  if (driveDate) {
+    selectedDriveDate = driveDate;
     renderWeather();
-    $('weather').querySelector(`[data-drive-day="${selectedDriveDate}"]`)?.focus({preventScroll:true});
+    if (todayShortcut) {
+      const townList = $('weather').querySelector('.drive-weather-town-list');
+      if (townList) townList.open = true;
+      const status = $('drive-weather-status');
+      status?.focus({preventScroll:true});
+      status?.scrollIntoView();
+    } else {
+      $('weather').querySelector(`[data-drive-day="${selectedDriveDate}"]`)?.focus({preventScroll:true});
+    }
   } else if (button?.dataset.forecastPoint) {
     point = button.dataset.forecastPoint;
     renderWeather();

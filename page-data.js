@@ -1,10 +1,10 @@
 import {profile,points} from './itinerary.js';
 import {reverseSegments} from './return-route.js';
 import {routeTowns} from './route-towns.js';
-import {weather,roads,routeWeather,townsWeather} from './sources.js?v=10';
+import {weather,roads,routeWeather,townsWeather} from './sources.js?v=12';
 import {MIN,HOUR,fresh,tripVerdict} from './logic.js?v=6';
 import {chpSegments,chpSnapshot,refreshChpSnapshot,segmentKey} from './chp-snapshot.js';
-import {driveForecastMaxAge,upcomingDriveDates} from './drive-weather.js?v=11';
+import {driveForecastMaxAge,upcomingDriveDates} from './drive-weather.js?v=12';
 import {forecastLength} from './forecast.js?v=10';
 
 const localKey='dodge-ridge-public-snapshots-v2';

@@ -1,5 +1,5 @@
 import {quant} from './forecast.js?v=10';
-import {upcomingDriveDates} from './drive-weather.js?v=11';
+import {driveDisplayDates, todayDriveWindow, upcomingDriveDates} from './drive-weather.js?v=12';
 import {roadEventText} from './road-locale.js';
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({
@@ -62,11 +62,18 @@ export function renderDriveWeather(outlook, {language='zh', imperial=false, sele
   const riskKey = key => Object.hasOwn(risk,key) ? key : 'unknown';
   const tag = (key,minor=false) => `<span class="drive-risk" data-risk="${riskKey(key)}">${minor&&key==='caution'?tr('轻微提醒','Minor concern'):risk[riskKey(key)]}</span>`;
   const reports = new Map((outlook?.days ?? []).map(day=>[day.date,day]));
-  const instant = new Date(now).valueOf();
-  const days = upcomingDriveDates(Number.isFinite(instant)?instant:Date.now(),timeZone).map(date=>
+  const parsedNow = new Date(now).valueOf();
+  const instant = Number.isFinite(parsedNow)?parsedNow:Date.now();
+  const upcoming = upcomingDriveDates(instant,timeZone);
+  const extendedDates = new Set(upcoming.slice(7));
+  const days = driveDisplayDates(instant,timeZone).map(date=>
     reports.get(date) ?? {date,risk:'unknown',complete:false,towns:[],alerts:[],reasons:[]});
-  const selected = days.find(day=>day.date===selectedDate) ?? days[0];
-  const extended = days.indexOf(selected) >= 7;
+  const today = days[0];
+  const selected = days.find(day=>day.date===selectedDate) ?? days.find(day=>day.date===upcoming[0]) ?? today;
+  const extended = extendedDates.has(selected.date);
+  const {phase} = outlook?.today ?? todayDriveWindow(instant,timeZone);
+  const started = phase!=='upcoming';
+  const todayStatus = phase==='past'?tr('已过去的预报时段','Past forecast window'):started?tr('今日早晨预报','This morning’s forecast'):'';
   const weekday = new Intl.DateTimeFormat(locale,{weekday:'short',timeZone:'UTC'});
   const shortDate = new Intl.DateTimeFormat(locale,{month:'numeric',day:'numeric',timeZone:'UTC'});
   const fullDate = new Intl.DateTimeFormat(locale,{weekday:'long',month:'long',day:'numeric',timeZone:'UTC'});
@@ -81,10 +88,11 @@ export function renderDriveWeather(outlook, {language='zh', imperial=false, sele
   const reasonText = values => [...new Set((values ?? []).map(value=>Object.hasOwn(reasonLabels,value)?reasonLabels[value]:value).filter(Boolean))].map(escapeHtml).join(' · ');
   const snow = value => escapeHtml(quant(value,'snow',true,language,true));
   const temp = value => escapeHtml(quant(value,'temp',imperial,language,true));
-  const dates = days.map((day,index)=>{
+  const dates = days.map(day=>{
     const stamp = fromDate(day.date);
     const active = day.date===selected.date;
-    return `<button type="button" data-drive-day="${day.date}"${index>=7?' data-horizon="extended" aria-describedby="drive-weather-horizon"':''} aria-pressed="${active}" aria-controls="drive-weather-status drive-weather-details"><span>${escapeHtml(weekday.format(stamp))}</span><time datetime="${day.date}">${escapeHtml(shortDate.format(stamp))}</time>${tag(day.risk)}</button>`;
+    const isToday = day.date===today.date;
+    return `<button type="button" data-drive-day="${day.date}"${isToday?' aria-current="date"':''}${extendedDates.has(day.date)?' data-horizon="extended" aria-describedby="drive-weather-horizon"':''} aria-pressed="${active}" aria-controls="drive-weather-status drive-weather-details"><span>${isToday?tr('今天','Today'):escapeHtml(weekday.format(stamp))}</span><time datetime="${day.date}">${escapeHtml(shortDate.format(stamp))}</time>${tag(day.risk)}</button>`;
   }).join('');
 
   const towns = (selected.towns ?? []).map(town=>{
@@ -116,17 +124,29 @@ export function renderDriveWeather(outlook, {language='zh', imperial=false, sele
   const chosen = fromDate(selected.date);
   const basis = time(outlook?.basedOn);
   const dayReason = reasonText(selected.reasons);
-  const concernedTowns = (selected.towns ?? []).filter(town=>town.risk==='high'||town.risk==='caution')
-    .sort((a,b)=>Number(b.risk==='high')-Number(a.risk==='high') || (b.morning?.snowCm ?? 0)-(a.morning?.snowCm ?? 0));
-  const focusTowns = concernedTowns.slice(0,3).map(town=>escapeHtml(town.name)).join(tr('、',', '));
-  const otherTowns = concernedTowns.length>3 ? tr(`等 ${concernedTowns.length} 个点位`,` and ${concernedTowns.length-3} more`) : '';
-  return `<section class="panel drive-weather" aria-labelledby="drive-weather-heading">
-    <header class="drive-weather-head"><div><h3 id="drive-weather-heading">${tr(`早晨驾驶展望 · ${days.length} 天`,`Morning driving outlook · ${days.length} days`)}</h3><p class="muted">${tr('各点统一看加州当地 05:00–09:00，前一夜为 19:00–05:00。','All points use the same California time windows. Morning is 05:00–09:00 and the previous night is 19:00–05:00.')}</p></div>${outlook?.stale?`<span class="badge stale">${tr('旧快照','Stale snapshot')}</span>`:''}</header>
-    <div id="drive-weather-status" class="drive-weather-selected" data-risk="${riskKey(selected.risk)}" aria-live="polite"><h4>${tr('05:00 出发','05:00 departure')} · ${risk[riskKey(selected.risk)]}</h4><p><time datetime="${selected.date}">${escapeHtml(fullDate.format(chosen))}</time>${extended?` <span class="drive-weather-long-range">${tr('远期展望','Long-range outlook')}</span>`:''}</p></div>
+  const focus = day => {
+    const concerned = (day.towns ?? []).filter(town=>town.risk==='high'||town.risk==='caution')
+      .sort((a,b)=>Number(b.risk==='high')-Number(a.risk==='high') || (b.morning?.snowCm ?? 0)-(a.morning?.snowCm ?? 0));
+    const names = concerned.slice(0,3).map(town=>escapeHtml(town.name)).join(tr('、',', '));
+    const extra = concerned.length>3 ? tr(`等 ${concerned.length} 个点位`,` and ${concerned.length-3} more`) : '';
+    return names?`<p class="drive-weather-focus"><strong>${tr('重点留意','Points to watch')}</strong> · ${names}${extra}</p>`:'';
+  };
+  const todayReason = focus(today) || (today.reasons?.length ? `<p class="drive-weather-reasons">${reasonText(today.reasons.slice(0,1))}</p>` : '');
+  const reflectingToday = started && selected.date===today.date;
+  const todayTitle = started ? tr('今天早晨','This morning') : tr('今天 05:00 出发','Today · 05:00 departure');
+  const title = reflectingToday ? tr('今日 05:00–09:00 预报','Today’s 05:00–09:00 forecast') : tr('05:00 出发','05:00 departure');
+  const heading = started ? tr(`早晨驾驶展望 · 今天及未来 ${upcoming.length} 天`,`Morning driving outlook · today and the next ${upcoming.length} days`) : tr(`早晨驾驶展望 · ${upcoming.length} 天`,`Morning driving outlook · ${upcoming.length} days`);
+  return `<section class="panel drive-weather drive-weather-today" aria-labelledby="drive-weather-today-heading">
+    <div class="drive-weather-selected" data-risk="${riskKey(today.risk)}"><h3 id="drive-weather-today-heading">${todayTitle} · ${risk[riskKey(today.risk)]}</h3><p><time datetime="${today.date}">${escapeHtml(shortDate.format(fromDate(today.date)))}</time><span>05:00–09:00</span>${todayStatus?` <span class="drive-weather-long-range">${todayStatus}</span>`:''}</p></div>
+    <div class="drive-weather-today-summary">${todayReason}<button type="button" data-drive-today="${today.date}" aria-controls="drive-weather-status drive-weather-details">${tr('查看今天详情','See today’s forecast')}</button></div>
+  </section>
+  <section class="panel drive-weather" aria-labelledby="drive-weather-heading">
+    <header class="drive-weather-head"><div><h3 id="drive-weather-heading">${heading}</h3><p class="muted">${tr('各点统一看加州当地 05:00–09:00，前一夜为 19:00–05:00。','All points use the same California time windows. Morning is 05:00–09:00 and the previous night is 19:00–05:00.')}</p></div>${outlook?.stale?`<span class="badge stale">${tr('旧快照','Stale snapshot')}</span>`:''}</header>
+    <div id="drive-weather-status" class="drive-weather-selected" data-risk="${riskKey(selected.risk)}" aria-live="polite" tabindex="-1"><h4>${title} · ${risk[riskKey(selected.risk)]}</h4><p><time datetime="${selected.date}">${escapeHtml(fullDate.format(chosen))}</time>${extended?` <span class="drive-weather-long-range">${tr('远期展望','Long-range outlook')}</span>`:''}${reflectingToday?` <span class="drive-weather-long-range">${todayStatus}</span>`:''}</p></div>
     <div class="drive-weather-dates" role="group" aria-label="${tr('选择出发日期','Choose a departure date')}">${dates}</div>
-    ${days.length>7?`<p id="drive-weather-horizon" class="muted drive-weather-source">${tr(`虚线日期为第 8–${days.length} 天，预报变数较大。`,`Dashed dates are days 8–${days.length}. These forecasts are more uncertain.`)}</p>`:''}
+    ${extendedDates.size?`<p id="drive-weather-horizon" class="muted drive-weather-source">${tr(`虚线日期为未来第 8–${upcoming.length} 天，预报变数较大。`,`Dashed dates are days 8–${upcoming.length} of the upcoming period. These forecasts are more uncertain.`)}</p>`:''}
     <div id="drive-weather-details" class="drive-weather-details">
-      ${focusTowns?`<p class="drive-weather-focus"><strong>${tr('重点留意','Points to watch')}</strong> · ${focusTowns}${otherTowns}</p>`:''}
+      ${focus(selected)}
       ${dayReason?`<p class="drive-weather-reasons">${dayReason}</p>`:''}
       ${!selected.complete&&towns?`<p class="muted">${tr('部分点位或时段资料不完整。','Some locations or hours have incomplete data.')}</p>`:''}
       ${alerts?`<div class="drive-official-alerts"><h5>${tr('NWS 路线警报','NWS alerts along the route')}</h5><ul>${alerts}</ul></div>`:''}

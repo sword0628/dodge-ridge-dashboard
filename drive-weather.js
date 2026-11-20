@@ -25,10 +25,24 @@ function localHours(timeZone) {
   };
 }
 
+export function todayDriveWindow(now, timeZone) {
+  const date = dateKey(now,timeZone);
+  const at = localHours(timeZone);
+  const start = at(date,'05');
+  const end = at(date,'09');
+  return {date,start,end,phase:now>=end?'past':now>start?'during':'upcoming'};
+}
+
 export function upcomingDriveDates(now, timeZone) {
-  const today = dateKey(now,timeZone);
-  const first = now > localHours(timeZone)(today,'05') ? shift(today,1) : today;
+  const {date,phase} = todayDriveWindow(now,timeZone);
+  const first = phase==='upcoming' ? date : shift(date,1);
   return Array.from({length:forecastLength},(_,i)=>shift(first,i));
+}
+
+export function driveDisplayDates(now, timeZone) {
+  const today = dateKey(now,timeZone);
+  const upcoming = upcomingDriveDates(now,timeZone);
+  return upcoming[0]===today ? upcoming : [today,...upcoming];
 }
 
 function assessTown(morning, stale) {
@@ -74,7 +88,8 @@ export function driveOutlook(townSnapshot, alertSnapshot, {now=Date.now(),timeZo
   const fetched = Date.parse(basedOn);
   const stale = !!hasMornings && (!valid(fetched) || fetched > now+5*60_000 || now-fetched>driveForecastMaxAge);
   const at = localHours(timeZone);
-  const days = upcomingDriveDates(now,timeZone).map(date=>{
+  const today = todayDriveWindow(now,timeZone);
+  const days = driveDisplayDates(now,timeZone).map(date=>{
     const towns = places.map(({id,name})=>{
       const forecast = forecasts.get(id);
       const morning = forecast?.mornings?.find(item=>item.date===date) ?? null;
@@ -93,5 +108,5 @@ export function driveOutlook(townSnapshot, alertSnapshot, {now=Date.now(),timeZo
     const reasons = [warning?'weatherWarning':alerts.length?'weatherAdvisory':null,stale?'stale':complete?null:'missing',minorNote].filter(Boolean);
     return {date,risk,complete,towns,alerts,reasons};
   });
-  return {days,stale,basedOn};
+  return {days,stale,basedOn,today};
 }

@@ -616,6 +616,12 @@ function townMorning(morning, values = {}) {
     freezingPrecip: null, fog: null, snowWeather: null, thunder: null, ...values};
 }
 
+function hasTownForecast(days, mornings) {
+  return days.some(day => day.high !== null || day.low !== null || day.condition !== 'unknown')
+    || mornings.some(({date, startAt, endAt, overnightStartAt, nwsSnowPeriods, ...fields}) =>
+      nwsSnowPeriods?.length > 0 || Object.values(fields).some(value => value !== null));
+}
+
 const completeAggregate = (values, reduce) => values.length && values.every(Number.isFinite) ? reduce(values) : null;
 const sum = values => values.reduce((total, value) => total + value, 0);
 const minimum = values => Math.min(...values);
@@ -681,7 +687,7 @@ function openMeteoTown(place, grid, calendar, response, timeZone, requestWindow)
       thunder: weatherFlag(codes.includes('thunder'), completeWeather),
     });
   });
-  if (!days.some(day => day.high !== null || day.low !== null || day.condition !== 'unknown')) return null;
+  if (!hasTownForecast(days, mornings)) return null;
   return {id: place.id, name: place.name, days, mornings, source: 'Open-Meteo', sourceUrl: townOpenMeteoUrl([place], timeZone, requestWindow),
     updatedAt: response.lastModified, fetchedAt: response.fetchedAt};
 }
@@ -768,7 +774,7 @@ async function nwsTown(place, calendar) {
         .map(row => ({startAt: iso(row.start), endAt: iso(row.end), snowCm: row.value * snowFactor})),
     });
   });
-  if (!days.some(day => day.high !== null || day.low !== null || day.condition !== 'unknown')) return null;
+  if (!hasTownForecast(days, mornings)) return null;
   return {id: place.id, name: place.name, days, mornings, source: official.source, sourceUrl: official.sourceUrl,
     updatedAt: official.updatedAt, fetchedAt: official.fetchedAt};
 }
