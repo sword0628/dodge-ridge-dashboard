@@ -1,5 +1,5 @@
 import {quant} from './forecast.js?v=10';
-import {upcomingDriveDates} from './drive-weather.js?v=10';
+import {upcomingDriveDates} from './drive-weather.js?v=11';
 import {roadEventText} from './road-locale.js';
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({
@@ -27,6 +27,7 @@ function guidance(tr) {
     <dl class="drive-chain-levels">${levels.map(([level,text])=>`<div><dt>${level}</dt><dd>${text}</dd></div>`).join('')}</dl>
     <p>${tr('Caltrans 的封路指南看积雪是否黏在路面、现场是否还能安全通行。官方指南没有一条以预报降雪英寸数自动装链或封路的统一门槛。','Caltrans considers whether snow sticks and whether road conditions allow safe travel. Its guidance gives no universal forecast snowfall amount that automatically triggers chains or closures.')}</p>
     <p>${tr('看板把冻雨、清晨降雪达到 1 英寸、夜间降雪达到 2 英寸且清晨达冰点、强阵风、低能见度、雷暴或适用的 NWS 警报标为天气高风险。','This dashboard flags freezing precipitation, at least 1 in of morning snow, at least 2 in overnight with freezing morning temperatures, strong gusts, poor visibility, thunderstorms, or an applicable NWS warning as high weather risk.')}</p>
+    <p>${tr('预报资料齐全且无适用的官方警报时，若只有 1–2 个点位气温在 −2 至 0°C（含），同时干燥且无其他风险信号，整体可维持「天气影响较低」，这些点位仍显示「轻微提醒」。达到 3 个点位则整体标为「谨慎驾驶」。','With complete forecasts and no applicable official warning, 1–2 dry points between −2 and 0°C inclusive can retain a lower overall weather impact when no other risk signals apply. Those points still show a minor concern. Three or more such points warrant overall caution.')}</p>
     <div class="actions">${officialLink(tr('Caltrans 链条规则','Caltrans chain rules'),'https://dot.ca.gov/travel/winter-driving-tips/chain-controls')} ${officialLink(tr('Caltrans 降雪与封路指南','Caltrans snow and closure guidance'),'https://dot.ca.gov/-/media/dot-media/programs/traffic-operations/documents/trafficops/202506-tom-ch-130-traffic-incident-management-a11y.pdf#page=39')} ${officialLink(tr('CHP 冬季驾驶','CHP winter driving'),'https://www.chp.ca.gov/programs-services/services-information/winter-driving-tips')} ${officialLink(tr('NWS 天气简报','NWS weather briefing'),'https://www.weather.gov/sto/briefing')} ${officialLink('Caltrans QuickMap','https://quickmap.dot.ca.gov/')}</div>
   </details>`;
 }
@@ -55,9 +56,11 @@ export function renderDriveWeather(outlook, {language='zh', imperial=false, sele
     missing:tr('部分逐小时预报缺失','Hourly forecasts are incomplete'), stale:tr('预报快照已过期','Forecast snapshot is stale'),
     weatherWarning:tr('沿途有 NWS 天气警报','NWS weather warning along the route'),
     weatherAdvisory:tr('沿途有 NWS 天气提醒','NWS weather advisory along the route'),
+    isolatedMinor:tr('仅 1–2 个干冷点位有轻微提醒','Minor concerns at only 1–2 dry, cold points'),
+    severalMinor:tr('至少 3 个干冷点位有轻微提醒','Minor concerns at 3 or more dry, cold points'),
   };
   const riskKey = key => Object.hasOwn(risk,key) ? key : 'unknown';
-  const tag = key => `<span class="drive-risk" data-risk="${riskKey(key)}">${risk[riskKey(key)]}</span>`;
+  const tag = (key,minor=false) => `<span class="drive-risk" data-risk="${riskKey(key)}">${minor&&key==='caution'?tr('轻微提醒','Minor concern'):risk[riskKey(key)]}</span>`;
   const reports = new Map((outlook?.days ?? []).map(day=>[day.date,day]));
   const instant = new Date(now).valueOf();
   const days = upcomingDriveDates(Number.isFinite(instant)?instant:Date.now(),timeZone).map(date=>
@@ -95,7 +98,7 @@ export function renderDriveWeather(outlook, {language='zh', imperial=false, sele
     const source = [town.source || town.sourceUrl ? officialLink(town.source || tr('原始预报','Original forecast'),town.sourceUrl) : '',
       updated ? `${tr('来源更新','Source updated')} ${updated}` : '', fetched && fetched!==updated ? `${tr('采集','Collected')} ${fetched}` : ''].filter(Boolean).join(' · ');
     return `<li class="drive-weather-town" data-risk="${key}">
-      <div class="drive-weather-town-head"><strong>${escapeHtml(town.name)}</strong>${tag(key)}</div>
+      <div class="drive-weather-town-head"><strong>${escapeHtml(town.name)}</strong>${tag(key,town.minor===true)}</div>
       ${morning?`<dl class="drive-weather-metrics"><div><dt>${tr('清晨降雪','Early snow')}</dt><dd>${snow(morning.snowCm)}</dd></div><div><dt>${tr('前一夜降雪','Overnight snow')}</dt><dd>${snow(morning.overnightSnowCm)}</dd></div><div><dt>${tr('清晨最低气温','Morning low')}</dt><dd>${temp(morning.minTempC)}</dd></div></dl>`:`<p class="muted">${tr('暂无这两个时段的逐小时预报。','Hourly forecasts for these periods are unavailable.')}</p>`}
       ${morning&&town.complete===false&&!town.reasons?.includes('missing')?`<p class="muted">${tr('部分时段资料不完整。','Some hours have incomplete data.')}</p>`:''}
       ${periods?`<details class="drive-weather-nws-periods"><summary>${tr('NWS 原始 6 小时时段降雪','NWS original 6-hour snowfall periods')}</summary><ul>${periods}</ul></details>`:''}

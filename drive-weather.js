@@ -4,6 +4,8 @@ const hour = 3_600_000;
 const inchCm = 2.54;
 const mileM = 1609.344;
 const mphKmh = 1.609344;
+const minorDryColdFloorC = -2;
+const minorPointLimit = 2;
 export const driveForecastMaxAge = 6 * hour;
 
 function localHours(timeZone) {
@@ -50,7 +52,8 @@ function assessTown(morning, stale) {
   if (rainMm >= .25*25.4) caution.push('rain');
   const complete = [snowCm,overnightSnowCm,minTempC,maxGustKmh,minVisibilityM,rainMm,overnightRainMm].every(valid)
     && [freezingPrecip,fog,snowWeather,thunder].every(value=>typeof value === 'boolean');
-  return {risk:high.length?'high':caution.length?'caution':complete?'low':'unknown',complete,
+  const minor = complete && !high.length && caution.length===1 && caution[0]==='freezing' && minTempC>=minorDryColdFloorC;
+  return {risk:high.length?'high':caution.length?'caution':complete?'low':'unknown',complete,minor,
     reasons:[...high,...caution,...(complete?[]:['missing'])]};
 }
 
@@ -81,9 +84,13 @@ export function driveOutlook(townSnapshot, alertSnapshot, {now=Date.now(),timeZo
     const alerts = morningAlerts(alertSnapshot,at(date,'05'),at(date,'09'));
     const warning = alerts.some(alert=>/\bwarning\b/i.test(alert.title));
     const complete = towns.length>0 && towns.every(town=>town.complete);
+    const minorCount = towns.filter(town=>town.minor).length;
+    const materialCaution = towns.some(town=>town.risk==='caution' && !town.minor);
     const risk = warning || towns.some(town=>town.risk==='high') ? 'high'
-      : alerts.length || towns.some(town=>town.risk==='caution') ? 'caution' : complete ? 'low' : 'unknown';
-    const reasons = [warning?'weatherWarning':alerts.length?'weatherAdvisory':null,stale?'stale':complete?null:'missing'].filter(Boolean);
+      : alerts.length || materialCaution || minorCount>minorPointLimit ? 'caution' : complete ? 'low' : 'unknown';
+    const minorNote = risk==='low' && minorCount>0 ? 'isolatedMinor'
+      : risk==='caution' && minorCount>minorPointLimit && !materialCaution && !alerts.length ? 'severalMinor' : null;
+    const reasons = [warning?'weatherWarning':alerts.length?'weatherAdvisory':null,stale?'stale':complete?null:'missing',minorNote].filter(Boolean);
     return {date,risk,complete,towns,alerts,reasons};
   });
   return {days,stale,basedOn};

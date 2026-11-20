@@ -1,12 +1,12 @@
-import {loadDashboard, refreshDashboard, refreshDriveForecast, refreshRoadLayers} from './page-data.js?v=10';
+import {loadDashboard, refreshDashboard, refreshDriveForecast, refreshRoadLayers} from './page-data.js?v=11';
 import {bestSnow, dateKey, forecastLength, localDays, quant, valid} from './forecast.js?v=10';
 import {renderRouteTowns} from './route-towns-view.js?v=10';
 import {bindRoadMap, roadMap} from './road-map.js?v=7';
 import {roadDirection, roadEventText, roadLocation, roadSource} from './road-locale.js';
 import {reverseSegments} from './return-route.js';
 import {chpSegments,chpSnapshot,segmentKey} from './chp-snapshot.js';
-import {driveForecastMaxAge,driveOutlook,upcomingDriveDates} from './drive-weather.js?v=10';
-import {renderDriveWeather} from './drive-weather-view.js?v=10';
+import {driveForecastMaxAge,driveOutlook,upcomingDriveDates} from './drive-weather.js?v=11';
+import {renderDriveWeather} from './drive-weather-view.js?v=11';
 
 const $ = id => document.getElementById(id);
 const h = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));

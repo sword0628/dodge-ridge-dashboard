@@ -4,7 +4,7 @@ import {routeTowns} from './route-towns.js';
 import {weather,roads,routeWeather,townsWeather} from './sources.js?v=10';
 import {MIN,HOUR,fresh,tripVerdict} from './logic.js?v=6';
 import {chpSegments,chpSnapshot,refreshChpSnapshot,segmentKey} from './chp-snapshot.js';
-import {driveForecastMaxAge,upcomingDriveDates} from './drive-weather.js?v=10';
+import {driveForecastMaxAge,upcomingDriveDates} from './drive-weather.js?v=11';
 import {forecastLength} from './forecast.js?v=10';
 
 const localKey='dodge-ridge-public-snapshots-v2';
