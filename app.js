@@ -1,10 +1,12 @@
-import {loadDashboard, refreshDashboard, refreshRoadLayers} from './page-data.js?v=6';
+import {loadDashboard, refreshDashboard, refreshDriveForecast, refreshRoadLayers} from './page-data.js?v=9';
 import {bestSnow, dateKey, localDays, quant, valid} from './forecast.js';
 import {renderRouteTowns} from './route-towns-view.js';
 import {bindRoadMap, roadMap} from './road-map.js?v=7';
 import {roadDirection, roadEventText, roadLocation, roadSource} from './road-locale.js';
 import {reverseSegments} from './return-route.js';
 import {chpSegments,chpSnapshot,segmentKey} from './chp-snapshot.js';
+import {driveForecastMaxAge,driveOutlook,upcomingDriveDates} from './drive-weather.js';
+import {renderDriveWeather} from './drive-weather-view.js';
 
 const $ = id => document.getElementById(id);
 const h = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -24,6 +26,7 @@ let triedRefresh = false;
 let lastRefreshStarted = 0;
 let renderedFreshness = '';
 let point = 'base';
+let selectedDriveDate;
 const viewForHash = hash => hash === '#return-roads' ? 'return-roads' : ['', '#roads', '#verdict'].includes(hash) ? 'roads' : null;
 let roadView = viewForHash(location.hash) ?? 'roads';
 const selectedRoad = {roads:-1,'return-roads':-1};
@@ -320,6 +323,8 @@ function forecastDays(id) {
 }
 
 function renderWeather() {
+  const root = $('weather');
+  const expanded = ['.drive-weather-town-list','.drive-weather-guidance'].filter(selector=>root.querySelector(selector)?.open);
   const snapshot = state?.weather?.[point];
   const forecast = forecastDays(point);
   const data = snapshot?.data;
@@ -334,8 +339,13 @@ function renderWeather() {
     forecast.map(day=>[`<button type="button" class="text-button public-forecast-day" data-forecast-day="${day.date}">${dayLabel(day.date)}</button>${day===best?` <span class="badge">${tr('降雪最多','Most snow')}</span>`:''}`,amount(day.hi,'temp',true),amount(day.lo,'temp',true),amount(day.feelsHi,'temp',true),amount(day.feelsLo,'temp',true),amount(day.snow,'snow',true),amount(day.wind,'wind',true)])) : empty(tr('该点暂无预报。','No forecast is available for this point.'));
   const discrepancies = (data?.discrepancies ?? []).map(item=>`<li>${timeLabel(item.start)} – ${timeLabel(item.end)} · ${link('NWS',item.sourceUrl)} ${amount(item.nws,'snow')} (${timeLabel(item.updatedAt) || h(mdash())}) · ${link('Open-Meteo',item.otherSourceUrl)} ${amount(item.openMeteo,'snow')} (${timeLabel(item.otherUpdatedAt) || h(mdash())})</li>`);
   const townSnapshot = state?.routeTowns;
-  const townView = townSnapshot && renderRouteTowns({...townSnapshot,stale:stale(townSnapshot,26)},{language,imperial,timeZone:zone(),now:Date.now()});
-  $('weather').innerHTML = `${heading(tr('天气与降雪','Weather & snow'))}<div class="grid weather-points">${points}</div><div class="panel"><h3>${pointName(point)} · ${tr('未来 7 天','Next 7 days')}</h3>${stamps(snapshot,26)}<div class="stats"><div><span>${tr('7 天累计降雪','7-day snowfall')}</span><strong>${amount(total,'snow')}</strong></div><div><span>${tr('预计降雪最多','Snowiest day')}</span><strong>${best?dayLabel(best.date):h(mdash())}</strong></div></div>${forecastTable}${discrepancies.length?`<details><summary>${tr('来源间降雪数据有分歧','Sources disagree about snowfall')}</summary><ul>${discrepancies.join('')}</ul></details>`:''}<div class="actions">${link(tr('雪场官方摄像头','Official resort webcams'),resortCams)} ${link(tr('雪场运营状态','Official resort status'),'https://dodgeridge.com/snow-report/')} ${link(tr('NWS 雪水比说明','NWS snow ratio product'),snowRatioProduct)}</div></div>${townView || ''}`;
+  const now = Date.now();
+  const timeZone = zone();
+  const townView = townSnapshot && renderRouteTowns({...townSnapshot,stale:stale(townSnapshot,26)},{language,imperial,timeZone,now});
+  const driveView = renderDriveWeather(driveOutlook(townSnapshot,state?.routeWeather,{timeZone,now}),
+    {language,imperial,selectedDate:selectedDriveDate,timeZone,now});
+  root.innerHTML = `${heading(tr('天气与降雪','Weather & snow'))}${driveView}<div class="grid weather-points">${points}</div><div class="panel"><h3>${pointName(point)} · ${tr('未来 7 天','Next 7 days')}</h3>${stamps(snapshot,26)}<div class="stats"><div><span>${tr('7 天累计降雪','7-day snowfall')}</span><strong>${amount(total,'snow')}</strong></div><div><span>${tr('预计降雪最多','Snowiest day')}</span><strong>${best?dayLabel(best.date):h(mdash())}</strong></div></div>${forecastTable}${discrepancies.length?`<details><summary>${tr('来源间降雪数据有分歧','Sources disagree about snowfall')}</summary><ul>${discrepancies.join('')}</ul></details>`:''}<div class="actions">${link(tr('雪场官方摄像头','Official resort webcams'),resortCams)} ${link(tr('雪场运营状态','Official resort status'),'https://dodgeridge.com/snow-report/')} ${link(tr('NWS 雪水比说明','NWS snow ratio product'),snowRatioProduct)}</div></div>${townView || ''}`;
+  for (const selector of expanded) root.querySelector(selector)?.setAttribute('open','');
 }
 
 function openForecast(date) {
@@ -348,7 +358,9 @@ function openForecast(date) {
 }
 
 function freshness() {
-  return [stale(state?.roads,.75),stale(state?.returnRoads,.75),chpSnapshot().stale].join('/');
+  const driveStale = Date.now() - Date.parse(state?.routeTowns?.savedAt) > driveForecastMaxAge;
+  const firstDrive = location.hash==='#weather' ? upcomingDriveDates(Date.now(),zone())[0] : '';
+  return [stale(state?.roads,.75),stale(state?.returnRoads,.75),chpSnapshot().stale,driveStale,firstDrive].join('/');
 }
 
 function render() {
@@ -370,9 +382,12 @@ async function update(manual=false) {
       state = loadDashboard();
       render();
     }
-    const next = await (manual ? refreshDashboard() : refreshRoadLayers());
+    const [next] = await Promise.all([
+      manual ? refreshDashboard() : refreshRoadLayers(),
+      !manual && location.hash==='#weather' ? refreshDriveForecast() : null,
+    ]);
     if (!next || !next.profile) throw new Error('Dashboard data unavailable');
-    state = next;
+    state = manual ? next : loadDashboard();
   } catch {
     loadFailed = true;
   } finally {
@@ -408,6 +423,12 @@ function syncRoadView() {
   requestAnimationFrame(scrollToRoadView);
 }
 window.addEventListener('hashchange',syncRoadView);
+window.addEventListener('hashchange',async ()=>{
+  if (location.hash!=='#weather') return;
+  await refreshDriveForecast();
+  state = loadDashboard();
+  render();
+});
 $('sectionNav').addEventListener('click',event=>{
   const anchor = event.target.closest('a');
   if (!anchor || !viewForHash(anchor.hash) || event.button!==0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -429,10 +450,17 @@ $('returnOverview').addEventListener('click',event=>{
 });
 $('weather').addEventListener('click',event=>{
   const button = event.target.closest('button');
-  if (button?.dataset.forecastPoint) {
+  if (button?.dataset.driveDay) {
+    selectedDriveDate = button.dataset.driveDay;
+    renderWeather();
+    $('weather').querySelector(`[data-drive-day="${selectedDriveDate}"]`)?.focus({preventScroll:true});
+  } else if (button?.dataset.forecastPoint) {
     point = button.dataset.forecastPoint;
     renderWeather();
     $('weather').querySelector(`[data-forecast-point="${point}"]`)?.focus();
   } else if (button?.dataset.forecastDay) openForecast(button.dataset.forecastDay);
 });
-update().then(scrollToRoadView);
+update().then(()=>{
+  if (location.hash==='#weather') $('weather').scrollIntoView();
+  else scrollToRoadView();
+});

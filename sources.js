@@ -581,14 +581,24 @@ function townCalendar(timeZone, now = Date.now()) {
     return instant;
   };
   const first = Date.parse(`${dateAt(now)}T00:00:00Z`);
-  const days = Array.from({length: 7}, (_, i) => {
-    const date = iso(first + i * 24 * HOUR).slice(0, 10);
-    const start = atHour(date, '07'), end = atHour(date, '19');
+  const calendarDate = offset => iso(first + offset * 24 * HOUR).slice(0, 10);
+  const hoursBetween = (start, end) => {
     const hours = [];
     for (let hour = start; hour < end; hour += HOUR) hours.push(hour);
-    return {date, start, end, hours};
+    return hours;
+  };
+  const days = Array.from({length: 7}, (_, i) => {
+    const date = calendarDate(i);
+    const start = atHour(date, '07'), end = atHour(date, '19');
+    return {date, start, end, hours: hoursBetween(start, end)};
   });
-  return {days};
+  const mornings = Array.from({length: 8}, (_, offset) => {
+    const date = calendarDate(offset);
+    const start = atHour(date, '05'), end = atHour(date, '09');
+    const overnightStart = atHour(calendarDate(offset - 1), '19');
+    return {date, start, end, overnightStart, hours: hoursBetween(start, end), overnightHours: hoursBetween(overnightStart, start)};
+  });
+  return {days, mornings};
 }
 
 function townDay(day, temperatures, conditions) {
@@ -596,6 +606,18 @@ function townDay(day, temperatures, conditions) {
   return {date: day.date, periodStart: iso(day.start), periodEnd: iso(day.end),
     high: complete ? Math.max(...temperatures) : null, low: complete ? Math.min(...temperatures) : null, ...conditions};
 }
+
+function townMorning(morning, values = {}) {
+  return {date: morning.date, startAt: iso(morning.start), endAt: iso(morning.end), overnightStartAt: iso(morning.overnightStart),
+    snowCm: null, overnightSnowCm: null, minTempC: null, maxGustKmh: null, minVisibilityM: null, rainMm: null, overnightRainMm: null,
+    freezingPrecip: null, fog: null, snowWeather: null, thunder: null, ...values};
+}
+
+const completeAggregate = (values, reduce) => values.length && values.every(Number.isFinite) ? reduce(values) : null;
+const sum = values => values.reduce((total, value) => total + value, 0);
+const minimum = values => Math.min(...values);
+const maximum = values => Math.max(...values);
+const weatherFlag = (present, complete) => present ? true : complete ? false : null;
 
 function openMeteoCondition(value) {
   const code = num(value);
@@ -610,7 +632,8 @@ function openMeteoCondition(value) {
 
 function townOpenMeteoUrl(places, timeZone) {
   const parameters = new URLSearchParams({latitude: places.map(place => place.lat).join(','), longitude: places.map(place => place.lon).join(','),
-    hourly: 'temperature_2m,weather_code', timezone: timeZone, timeformat: 'unixtime', forecast_days: '7', temperature_unit: 'celsius'});
+    hourly: 'temperature_2m,weather_code,snowfall,rain,wind_gusts_10m,visibility', timezone: timeZone, timeformat: 'unixtime',
+    forecast_days: '8', past_days: '1', temperature_unit: 'celsius', precipitation_unit: 'mm', wind_speed_unit: 'kmh'});
   // Towns without a supplied height keep Open-Meteo's default terrain correction.
   if (places.every(place => num(place.elevation) !== null)) parameters.set('elevation', places.map(place => num(place.elevation)).join(','));
   return `https://api.open-meteo.com/v1/forecast?${parameters}`;
@@ -634,26 +657,51 @@ function openMeteoTown(place, grid, calendar, response, timeZone) {
     const condition = daytimeOpenMeteoCondition(indexes.map(i => hourly.weather_code?.[i]));
     return townDay(day, temperatures, {condition});
   });
+  const read = (field, unit, hours) => grid.hourly_units?.[field] === unit
+    ? hours.map(time => num(hourly[field]?.[indexAt.get(time)])) : [];
+  const mornings = calendar.mornings.map(morning => {
+    // Open-Meteo labels accumulation and peak gust with the end of the preceding hour.
+    const endingHours = morning.hours.map(time => time + HOUR);
+    const endingOvernight = morning.overnightHours.map(time => time + HOUR);
+    const codes = morning.hours.map(time => openMeteoCondition(hourly.weather_code?.[indexAt.get(time)]));
+    const completeWeather = codes.every(code => code !== 'unknown');
+    const snow = read('snowfall', 'cm', endingHours);
+    return townMorning(morning, {
+      snowCm: completeAggregate(snow, sum), overnightSnowCm: completeAggregate(read('snowfall', 'cm', endingOvernight), sum),
+      minTempC: completeAggregate(read('temperature_2m', '°C', morning.hours), minimum),
+      maxGustKmh: completeAggregate(read('wind_gusts_10m', 'km/h', endingHours), maximum),
+      minVisibilityM: completeAggregate(read('visibility', 'm', morning.hours), minimum),
+      rainMm: completeAggregate(read('rain', 'mm', endingHours), sum), overnightRainMm: completeAggregate(read('rain', 'mm', endingOvernight), sum),
+      freezingPrecip: weatherFlag(codes.includes('mix'), completeWeather), fog: weatherFlag(codes.includes('fog'), completeWeather),
+      snowWeather: weatherFlag(codes.includes('snow') || snow.some(value => value > 0), completeWeather),
+      thunder: weatherFlag(codes.includes('thunder'), completeWeather),
+    });
+  });
   if (!days.some(day => day.high !== null || day.low !== null || day.condition !== 'unknown')) return null;
-  return {id: place.id, name: place.name, days, source: 'Open-Meteo', sourceUrl: townOpenMeteoUrl([place], timeZone),
+  return {id: place.id, name: place.name, days, mornings, source: 'Open-Meteo', sourceUrl: townOpenMeteoUrl([place], timeZone),
     updatedAt: response.lastModified, fetchedAt: response.fetchedAt};
 }
 
-function townNwsConditions(layer) {
+function townNwsWeatherIntervals(layer) {
   return (layer?.values ?? []).flatMap(row => {
     const [stamp, duration] = String(row.validTime).split('/');
     const start = Date.parse(stamp), end = start + durationMs(duration);
     if (!Number.isFinite(start) || end <= start || !Array.isArray(row.value)) return [];
-    return row.value.flatMap(item => {
-      const label = String(item?.weather ?? '').replace(/_/g, ' ').toLowerCase().trim();
-      const condition = /freezing|sleet|ice pellets|mix/.test(label) ? 'mix' : /thunder/.test(label) ? 'thunder'
-        : /snow|flurr(?:ies|y)|blizzard/.test(label) ? 'snow' : /rain|drizzle|showers/.test(label) ? 'rain'
-        : /fog|mist/.test(label) ? 'fog' : null;
-      const coverage = String(item?.coverage ?? '').replace(/_/g, ' ').toLowerCase();
-      const weight = {'definite': 1, 'likely': 0.7, 'chance': 0.5, 'slight chance': 0.2, 'isolated': 0.2}[coverage] ?? 0.65;
-      return condition ? [{start, end, condition, weight, sourceText: [coverage, item.intensity, label].filter(Boolean).join(' ')}] : [];
-    });
+    return [{start, end, weather: row.value}];
   });
+}
+
+function townNwsConditions(intervals) {
+  return intervals.flatMap(({start, end, weather}) => weather.flatMap(item => {
+    const label = String(item?.weather ?? '').replace(/_/g, ' ').toLowerCase().trim();
+    const condition = /freezing|sleet|ice pellets|mix/.test(label) ? 'mix' : /thunder/.test(label) ? 'thunder'
+      : /snow|flurr(?:ies|y)|blizzard/.test(label) ? 'snow' : /rain|drizzle|showers/.test(label) ? 'rain'
+      : /fog|mist/.test(label) ? 'fog' : null;
+    const coverage = String(item?.coverage ?? '').replace(/_/g, ' ').toLowerCase();
+    const weight = {'definite': 1, 'likely': 0.7, 'chance': 0.5, 'slight chance': 0.2, 'isolated': 0.2}[coverage] ?? 0.65;
+    return condition ? [{start, end, condition, weight, sourceText: [coverage, item.intensity, label].filter(Boolean).join(' '),
+      freezingPrecip: /\bfreezing (?:rain|drizzle|precipitation)\b/.test(label)}] : [];
+  }));
 }
 
 function townConditionForDay(day, weather, skies) {
@@ -686,14 +734,38 @@ async function nwsTown(place, calendar) {
   const official = await nwsGrid(place);
   const layer = official.data.temperature;
   const temperature = /:degC$/.test(String(layer?.uom)) ? gridIntervals(layer) : [];
-  const weather = townNwsConditions(official.data.weather);
+  const intervals = townNwsWeatherIntervals(official.data.weather);
+  const weather = townNwsConditions(intervals);
   const skies = gridIntervals(official.data.skyCover);
+  const atHours = (rows, hours) => hours.map(hour => rows.find(row => row.start <= hour && hour < row.end)?.value ?? null);
   const days = calendar.days.map(day => {
-    const known = day.hours.map(hour => temperature.find(row => row.start <= hour && hour < row.end)?.value ?? null);
-    return townDay(day, known, townConditionForDay(day, weather, skies));
+    return townDay(day, atHours(temperature, day.hours), townConditionForDay(day, weather, skies));
+  });
+  const gustLayer = official.data.windGust;
+  const gustFactor = /:km_h-1$/.test(gustLayer?.uom) ? 1 : /:m_s-1$/.test(gustLayer?.uom) ? 3.6 : null;
+  const gusts = gustFactor === null ? [] : gridIntervals(gustLayer);
+  const snowLayer = official.data.snowfallAmount;
+  const snowUnit = /:(mm|cm|m)$/.exec(snowLayer?.uom)?.[1];
+  const snowFactor = {mm: 0.1, cm: 1, m: 100}[snowUnit];
+  const snowPeriods = snowFactor === undefined ? [] : gridIntervals(snowLayer)
+    .filter(row => row.value !== null && row.value >= 0 && row.end - row.start === 6 * HOUR)
+    .sort((a, b) => a.start-b.start);
+  const mornings = calendar.mornings.map(morning => {
+    const conditions = weather.filter(row => row.start < morning.end && row.end > morning.start);
+    const completeWeather = morning.hours.every(hour => intervals.some(row => row.start <= hour && row.end >= hour + HOUR));
+    const peak = completeAggregate(atHours(gusts, morning.hours), maximum);
+    return townMorning(morning, {
+      minTempC: completeAggregate(atHours(temperature, morning.hours), minimum), maxGustKmh: peak === null ? null : peak * gustFactor,
+      freezingPrecip: weatherFlag(conditions.some(row => row.freezingPrecip), completeWeather),
+      fog: weatherFlag(conditions.some(row => row.condition === 'fog'), completeWeather),
+      snowWeather: weatherFlag(conditions.some(row => row.condition === 'snow'), completeWeather),
+      thunder: weatherFlag(conditions.some(row => row.condition === 'thunder'), completeWeather),
+      nwsSnowPeriods: snowPeriods.filter(row => row.start < morning.end && row.end > morning.overnightStart)
+        .map(row => ({startAt: iso(row.start), endAt: iso(row.end), snowCm: row.value * snowFactor})),
+    });
   });
   if (!days.some(day => day.high !== null || day.low !== null || day.condition !== 'unknown')) return null;
-  return {id: place.id, name: place.name, days, source: official.source, sourceUrl: official.sourceUrl,
+  return {id: place.id, name: place.name, days, mornings, source: official.source, sourceUrl: official.sourceUrl,
     updatedAt: official.updatedAt, fetchedAt: official.fetchedAt};
 }
 
@@ -722,7 +794,8 @@ export async function townsWeather(places, timeZone = 'America/Los_Angeles') {
     }
   }
   const towns = places.map(place => forecasts.get(place) ?? {id: place.id, name: place.name,
-    days: calendar.days.map(day => townDay(day, [], {condition: 'unknown'})), source: null, sourceUrl: null, updatedAt: null, fetchedAt: null});
+    days: calendar.days.map(day => townDay(day, [], {condition: 'unknown'})), mornings: calendar.mornings.map(morning => townMorning(morning)),
+    source: null, sourceUrl: null, updatedAt: null, fetchedAt: null});
   const unavailable = towns.filter(town => !town.source).map(town => town.name);
   if (unavailable.length) warnings.push(`暂无预报：${unavailable.join('、')}`);
   return {towns, period: {startHour: 7, endHour: 19, timeZone}, fetchedAt: iso(Date.now()),

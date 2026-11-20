@@ -408,3 +408,73 @@ dialog::backdrop { background: rgba(12, 36, 30, .55); }
 @media (min-width: 1170px) {
   .layout { grid-template-columns: 190px minmax(0, 1fr); }
 }
+
+.drive-weather, .drive-weather-details { display: grid; min-width: 0; gap: .72rem; }
+.drive-weather > details { margin-top: 0; }
+.drive-weather-head, .drive-weather-town-head {
+  display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: .3rem .6rem;
+}
+.drive-weather-head p { font-size: .87rem; }
+.drive-weather-dates {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .34rem;
+}
+.drive-weather-dates button {
+  display: grid; align-content: start; justify-items: center; gap: .12rem;
+  min-width: 0; min-height: 66px; padding: .34rem .13rem; line-height: 1.1; text-align: center;
+  font-size: .82rem; white-space: normal;
+}
+.drive-weather-dates button[aria-pressed="true"] {
+  border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--accent-pale);
+}
+.drive-weather-dates button time { font-weight: 740; }
+.drive-risk {
+  display: inline-block; max-width: 100%; padding: .12rem .32rem; border-radius: 5px;
+  color: #334842; background: #e7edeb; font-size: .76rem; font-weight: 710; line-height: 1.22;
+}
+.drive-weather-dates .drive-risk { padding-inline: .22rem; font-size: .71rem; overflow-wrap: anywhere; }
+.drive-risk[data-risk="low"] { color: #194638; background: var(--accent-pale); }
+.drive-risk[data-risk="caution"] { color: var(--amber); background: var(--amber-pale); }
+.drive-risk[data-risk="high"] { color: var(--red); background: var(--red-pale); }
+.drive-weather-selected {
+  display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .32rem .75rem;
+  padding: .7rem .82rem; border-radius: 9px; color: #263c35; background: #e7edeb;
+}
+.drive-weather-selected h4 { color: inherit; font-size: 1.02rem; }
+.drive-weather-selected time { font-size: .82rem; }
+.drive-weather-selected[data-risk="low"] { color: #fff; background: #235d49; }
+.drive-weather-selected[data-risk="caution"] { color: #fff; background: #775019; }
+.drive-weather-selected[data-risk="high"] { color: #fff; background: #8e302d; }
+.drive-weather-towns {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: .47rem;
+  list-style: none; margin: 0; padding: 0;
+}
+.drive-weather-town {
+  display: grid; gap: .32rem; min-width: 0; margin: 0; padding: .55rem .65rem;
+  border: 1px solid var(--line); border-inline-start: 3px solid var(--line); border-radius: 8px; overflow-wrap: anywhere;
+}
+.drive-weather-town[data-risk="high"] { border-inline-start-color: var(--red); }
+.drive-weather-town[data-risk="caution"] { border-inline-start-color: #ba8432; }
+.drive-weather-town p { margin: 0; }
+.drive-weather-metrics {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .38rem; margin: 0;
+}
+.drive-weather-metrics dt { color: var(--muted); font-size: .77rem; line-height: 1.2; }
+.drive-weather-metrics dd { margin: .15rem 0 0; font-size: .87rem; font-weight: 710; }
+.drive-weather-reasons, .drive-weather-source { font-size: .79rem; }
+.drive-weather-focus { font-size: .88rem; }
+.drive-weather-town-list { margin-top: 0; }
+.drive-weather-town-list .drive-weather-towns { margin-top: .55rem; }
+.drive-weather-nws-periods { padding: .25rem .4rem; font-size: .78rem; }
+.drive-weather-nws-periods ul { margin-top: .15rem; }
+.drive-official-alerts { padding: .55rem .65rem; background: var(--amber-pale); border-radius: 8px; }
+.drive-official-alerts h5 { margin: 0; font-size: .86rem; }
+.drive-official-alerts ul { margin-top: .3rem; }
+.drive-weather-guidance { font-size: .85rem; }
+.drive-weather-guidance .actions { margin-top: .5rem; }
+.drive-chain-levels { display: grid; gap: .38rem; margin: .5rem 0; }
+.drive-chain-levels > div { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .45rem; }
+.drive-chain-levels dt { font-weight: 750; }
+.drive-chain-levels dd { margin: 0; }
+@media (min-width: 700px) {
+  .drive-weather-dates { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+}

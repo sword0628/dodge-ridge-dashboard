@@ -1,9 +1,10 @@
 import {profile,points} from './itinerary.js';
 import {reverseSegments} from './return-route.js';
 import {routeTowns} from './route-towns.js';
-import {weather,roads,routeWeather,townsWeather} from './sources.js?v=6';
+import {weather,roads,routeWeather,townsWeather} from './sources.js?v=9';
 import {MIN,HOUR,fresh,tripVerdict} from './logic.js?v=6';
 import {chpSegments,chpSnapshot,refreshChpSnapshot,segmentKey} from './chp-snapshot.js';
+import {driveForecastMaxAge,upcomingDriveDates} from './drive-weather.js';
 
 const localKey='dodge-ridge-public-snapshots-v2';
 const route={segments:profile.segments,timeZone:profile.timeZone};
@@ -16,6 +17,8 @@ try {
   for(const key of Object.keys(kinds)) if(cached?.[key]?.data) snapshots[key]=cached[key];
 } catch { /* Private browsing and missing storage still support live fetches. */ }
 let activeRefresh;
+let activeDriveRefresh;
+const pendingLoads = new Map();
 
 function view(key){
   const value=snapshots[key];
@@ -59,7 +62,7 @@ const loaders={
   towns:forecastTowns,
 };
 
-async function update(key,now,feedCache){
+async function updateSnapshot(key,now,feedCache){
   const previous=snapshots[key];
   if(now<Date.parse(previous?.retryAt))return false;
   try {
@@ -72,6 +75,13 @@ async function update(key,now,feedCache){
     snapshots[key]={...previous,error:'本次抓取失败。',attempts,retryAt:new Date(Date.now()+delay).toISOString()};
     return false;
   }
+}
+
+function update(key,now,feedCache){
+  if (pendingLoads.has(key)) return pendingLoads.get(key);
+  const pending = updateSnapshot(key,now,feedCache).finally(()=>pendingLoads.delete(key));
+  pendingLoads.set(key,pending);
+  return pending;
 }
 
 export function loadDashboard(){
@@ -117,4 +127,23 @@ export async function refreshRoadLayers(){
   ]);
   persist();
   return loadDashboard();
+}
+
+export function refreshDriveForecast(){
+  if (activeRefresh) return activeRefresh;
+  if (activeDriveRefresh) return activeDriveRefresh;
+  const now = Date.now();
+  const forecast = snapshots.towns;
+  const lastDate = upcomingDriveDates(now,profile.timeZone).at(-1);
+  const driveReady = now - Date.parse(forecast?.savedAt) <= driveForecastMaxAge
+    && forecast?.data?.towns?.some(town=>town.mornings?.some(morning=>morning.date===lastDate));
+  activeDriveRefresh = (async()=>{
+    await Promise.all([
+      driveReady ? null : update('towns',now),
+      fresh(snapshots.routeWeather,'routeWeather',now) ? null : update('routeWeather',now),
+    ]);
+    persist();
+    return loadDashboard();
+  })().finally(()=>{activeDriveRefresh=undefined;});
+  return activeDriveRefresh;
 }

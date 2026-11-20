@@ -1,0 +1,90 @@
+import {dateKey,shift,valid} from './forecast.js';
+
+const hour = 3_600_000;
+const inchCm = 2.54;
+const mileM = 1609.344;
+const mphKmh = 1.609344;
+export const driveForecastMaxAge = 6 * hour;
+
+function localHours(timeZone) {
+  const clock = new Intl.DateTimeFormat('en-CA',{
+    timeZone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23',
+  });
+  return (date, hourText) => {
+    const desired = Date.parse(`${date}T${hourText}:00:00Z`);
+    let time = desired;
+    for (let i=0;i<3;i++) {
+      const p = Object.fromEntries(clock.formatToParts(time).map(part=>[part.type,part.value]));
+      const rendered = Date.UTC(+p.year,+p.month-1,+p.day,+p.hour,+p.minute,+p.second);
+      if (rendered === desired) break;
+      time += desired - rendered;
+    }
+    return time;
+  };
+}
+
+export function upcomingDriveDates(now, timeZone) {
+  const today = dateKey(now,timeZone);
+  const first = now > localHours(timeZone)(today,'05') ? shift(today,1) : today;
+  return Array.from({length:7},(_,i)=>shift(first,i));
+}
+
+function assessTown(morning, stale) {
+  if (!morning || stale) return {risk:'unknown',complete:false,reasons:[stale?'stale':'missing']};
+  const {snowCm,overnightSnowCm,minTempC,maxGustKmh,minVisibilityM,rainMm,overnightRainMm,
+    freezingPrecip,fog,snowWeather,thunder} = morning;
+  const cold = valid(minTempC) && minTempC <= 0;
+  const high = [];
+  const caution = [];
+  if (freezingPrecip) high.push('freezingPrecip');
+  if (thunder) high.push('thunder');
+  if (snowCm >= inchCm) high.push('heavySnow');
+  else if (snowCm > 0 || snowWeather) caution.push('snow');
+  if (overnightSnowCm >= 2*inchCm && cold) high.push('heavyOvernightSnow');
+  else if (overnightSnowCm > 0) caution.push('overnightSnow');
+  if (maxGustKmh >= 45*mphKmh) high.push('strongGusts');
+  else if (maxGustKmh >= 30*mphKmh) caution.push('gusts');
+  if (valid(minVisibilityM) && minVisibilityM <= mileM/4) high.push('poorVisibility');
+  else if (fog || valid(minVisibilityM) && minVisibilityM <= mileM) caution.push('fog');
+  if (cold) caution.push(snowCm > 0 || overnightSnowCm > 0 || rainMm > 0 || overnightRainMm > 0 ? 'ice' : 'freezing');
+  if (rainMm >= .25*25.4) caution.push('rain');
+  const complete = [snowCm,overnightSnowCm,minTempC,maxGustKmh,minVisibilityM,rainMm,overnightRainMm].every(valid)
+    && [freezingPrecip,fog,snowWeather,thunder].every(value=>typeof value === 'boolean');
+  return {risk:high.length?'high':caution.length?'caution':complete?'low':'unknown',complete,
+    reasons:[...high,...caution,...(complete?[]:['missing'])]};
+}
+
+function morningAlerts(alertSnapshot, start, end) {
+  if (!alertSnapshot?.data || alertSnapshot.stale) return [];
+  return (alertSnapshot.data.alerts ?? []).filter(alert=>{
+    const from = Date.parse(alert.start);
+    const until = Date.parse(alert.end);
+    return /\b(?:warning|advisory|watch)\b/i.test(alert.title ?? '') && valid(from) && valid(until) && from < end && until > start;
+  });
+}
+
+export function driveOutlook(townSnapshot, alertSnapshot, {now=Date.now(),timeZone='America/Los_Angeles'}={}) {
+  const forecasts = new Map((townSnapshot?.data?.towns ?? []).map(town=>[town.id,town]));
+  const places = townSnapshot?.places?.length ? townSnapshot.places : [...forecasts.values()];
+  const basedOn = townSnapshot?.savedAt ?? townSnapshot?.data?.fetchedAt;
+  const hasMornings = [...forecasts.values()].some(town=>town.mornings?.length);
+  const fetched = Date.parse(basedOn);
+  const stale = !!hasMornings && (!valid(fetched) || fetched > now+5*60_000 || now-fetched>driveForecastMaxAge);
+  const at = localHours(timeZone);
+  const days = upcomingDriveDates(now,timeZone).map(date=>{
+    const towns = places.map(({id,name})=>{
+      const forecast = forecasts.get(id);
+      const morning = forecast?.mornings?.find(item=>item.date===date) ?? null;
+      const {source,sourceUrl,updatedAt,fetchedAt} = forecast ?? {};
+      return {id,name,morning,source,sourceUrl,updatedAt,fetchedAt,...assessTown(morning,stale)};
+    });
+    const alerts = morningAlerts(alertSnapshot,at(date,'05'),at(date,'09'));
+    const warning = alerts.some(alert=>/\bwarning\b/i.test(alert.title));
+    const complete = towns.length>0 && towns.every(town=>town.complete);
+    const risk = warning || towns.some(town=>town.risk==='high') ? 'high'
+      : alerts.length || towns.some(town=>town.risk==='caution') ? 'caution' : complete ? 'low' : 'unknown';
+    const reasons = [warning?'weatherWarning':alerts.length?'weatherAdvisory':null,stale?'stale':complete?null:'missing'].filter(Boolean);
+    return {date,risk,complete,towns,alerts,reasons};
+  });
+  return {days,stale,basedOn};
+}
