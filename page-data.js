@@ -1,10 +1,10 @@
 import {profile,points} from './itinerary.js';
 import {reverseSegments} from './return-route.js';
 import {routeTowns} from './route-towns.js';
-import {weather,roads,routeWeather,townsWeather} from './sources.js?v=12';
+import {weather,roads,routeWeather,townsWeather} from './sources.js?v=13';
 import {MIN,HOUR,fresh,tripVerdict} from './logic.js?v=6';
 import {chpSegments,chpSnapshot,refreshChpSnapshot,segmentKey} from './chp-snapshot.js';
-import {driveForecastMaxAge,upcomingDriveDates} from './drive-weather.js?v=12';
+import {driveDisplayDates,driveForecastMaxAge,hasCompleteDriveDate,upcomingDriveDates} from './drive-weather.js?v=13';
 import {forecastLength} from './forecast.js?v=10';
 
 const localKey='dodge-ridge-public-snapshots-v2';
@@ -15,7 +15,7 @@ const kinds={base:'weather',summit:'weather',roads:'roads',returnRoads:'roads',r
 let snapshots={};
 try {
   const cached=JSON.parse(localStorage.getItem(localKey)??'{}');
-  for(const key of Object.keys(kinds)) if(cached?.[key]?.data) snapshots[key]=cached[key];
+  for(const key of Object.keys(kinds)) if(cached?.[key]?.data || cached?.[key]?.retryAt) snapshots[key]=cached[key];
 } catch { /* Private browsing and missing storage still support live fetches. */ }
 let activeRefresh;
 let activeDriveRefresh;
@@ -42,10 +42,14 @@ async function publicRoads(roadRoute, feedCache){
   return {...result,segments:result.segments.map(p=>({...p,cameras:p.cameras.map(({url,...c})=>({...c,officialUrl:cameraPage(c)}))}))};
 }
 
-async function forecastTowns(){
-  const result=await townsWeather(places,profile.timeZone);
+async function forecastTowns(nwsFallback){
+  const result=await townsWeather(places,profile.timeZone,{nwsFallback});
   if(!result.towns.some(t=>t.source))throw new Error('沿途城镇预报暂无数据。');
   return result;
+}
+
+function hasPrimaryTownForecast(data){
+  return data?.primaryAvailable ?? (data?.towns?.length>0 && data.towns.every(town=>town.source==='Open-Meteo'));
 }
 
 async function forecastRoute(){
@@ -60,20 +64,30 @@ const loaders={
   roads:feedCache=>publicRoads(route,feedCache),
   returnRoads:feedCache=>publicRoads(returnRoute,feedCache),
   routeWeather:forecastRoute,
-  towns:forecastTowns,
 };
+
+function fetchFailure(previous,error){
+  const attempts=Math.min((previous?.attempts??0)+1,7);
+  const delay=Math.max(Number(error?.retryAfterMs)||0,Math.min(6*HOUR,5*MIN*2**(attempts-1)));
+  return {error:'本次抓取失败。',attempts,retryAt:new Date(Date.now()+delay).toISOString()};
+}
 
 async function updateSnapshot(key,now,feedCache){
   const previous=snapshots[key];
   if(now<Date.parse(previous?.retryAt))return false;
+  const driveDates=key==='towns'?driveDisplayDates(now,profile.timeZone):[];
+  const retainTowns=hasCompleteDriveDate(previous?.data,places,driveDates);
   try {
-    const data=await loaders[key](feedCache);
+    const data=key==='towns'?await forecastTowns(!retainTowns):await loaders[key](feedCache);
+    if(retainTowns && !hasCompleteDriveDate(data,places,driveDates))throw new Error('Open-Meteo route forecast has no complete morning.');
+    if(key==='towns' && !hasPrimaryTownForecast(data)){
+      snapshots[key]={savedAt:data.fetchedAt,data,...fetchFailure(previous)};
+      return false;
+    }
     snapshots[key]={savedAt:new Date().toISOString(),data};
     return true;
   } catch(error){
-    const attempts=Math.min((previous?.attempts??0)+1,7);
-    const delay=Math.max(Number(error.retryAfterMs)||0,Math.min(6*HOUR,5*MIN*2**(attempts-1)));
-    snapshots[key]={...previous,error:'本次抓取失败。',attempts,retryAt:new Date(Date.now()+delay).toISOString()};
+    snapshots[key]={...previous,...fetchFailure(previous,error),...(retainTowns?{retained:true}:{})};
     return false;
   }
 }
@@ -98,7 +112,7 @@ export function loadDashboard(){
   const outboundChp=!chp.stale&&profile.segments.every(segment=>chpByRoute.has(segmentKey(segment))) ? [...chpByRoute.values()] : null;
   const updatedAt=[road,returnRoad,routeForecast,forecasts,base,summit].map(v=>v?.savedAt).filter(Boolean).sort().at(-1);
   const roadsReady=[road,returnRoad].every(snapshot=>snapshot?.data&&!snapshot.stale&&snapshot.data.segments.every(segment=>segment.status==='ok'));
-  const partial=Boolean(updatedAt)&&(!roadsReady||![base,summit,forecasts].every(v=>v?.data&&!v.stale));
+  const partial=Boolean(updatedAt)&&(!roadsReady||![base,summit,forecasts].every(v=>v?.data&&!v.stale)||!!forecasts?.error||!hasPrimaryTownForecast(forecasts?.data));
   return {profile,roads:road,returnRoads:returnRoad,chp,routeWeather:routeForecast,routeTowns:{...forecasts,places},weather:{base,summit},
     verdict:tripVerdict(profile,road,routeForecast,now,outboundChp,chp.data?.fetchedAt),
     refreshStatus:{status:updatedAt?partial?'partial':'live':'unavailable',partial,updatedAt}};
@@ -109,7 +123,7 @@ export function refreshDashboard(){
   activeRefresh=(async()=>{
     const now=Date.now();
     const feedCache=new Map();
-    const [done]=await Promise.all([Promise.all(Object.keys(loaders).map(key=>update(key,now,feedCache))),refreshChpSnapshot()]);
+    const [done]=await Promise.all([Promise.all(Object.keys(kinds).map(key=>update(key,now,feedCache))),refreshChpSnapshot()]);
     persist();
     const dashboard=loadDashboard();
     if(!done.some(Boolean)&&dashboard.refreshStatus.updatedAt)dashboard.refreshStatus.status='cached';
@@ -136,7 +150,8 @@ export function refreshDriveForecast(){
   const now = Date.now();
   const forecast = snapshots.towns;
   const lastDate = upcomingDriveDates(now,profile.timeZone).at(-1);
-  const driveReady = now - Date.parse(forecast?.savedAt) <= driveForecastMaxAge
+  const driveReady = !forecast?.error && hasPrimaryTownForecast(forecast?.data)
+    && now - Date.parse(forecast?.savedAt) <= driveForecastMaxAge
     && forecast?.data?.towns?.some(town=>town.mornings?.some(morning=>morning.date===lastDate));
   const resortRefreshes = ['base','summit'].filter(key=>
     !fresh(snapshots[key],'weather',now) || snapshots[key]?.data?.forecastDaysRequested!==forecastLength);

@@ -45,6 +45,20 @@ export function driveDisplayDates(now, timeZone) {
   return upcoming[0]===today ? upcoming : [today,...upcoming];
 }
 
+function completeMorning(morning) {
+  if (!morning) return false;
+  const {snowCm,overnightSnowCm,minTempC,maxGustKmh,minVisibilityM,rainMm,overnightRainMm,
+    freezingPrecip,fog,snowWeather,thunder} = morning;
+  return [snowCm,overnightSnowCm,minTempC,maxGustKmh,minVisibilityM,rainMm,overnightRainMm].every(valid)
+    && [freezingPrecip,fog,snowWeather,thunder].every(value=>typeof value === 'boolean');
+}
+
+export function hasCompleteDriveDate(data, places, dates) {
+  const byPlace = new Map((data?.towns ?? []).map(town=>[town.id,town]));
+  return places.length > 0 && dates.some(date=>places.every(place=>
+    completeMorning(byPlace.get(place.id)?.mornings?.find(morning=>morning.date===date))));
+}
+
 function assessTown(morning, stale) {
   if (!morning || stale) return {risk:'unknown',complete:false,reasons:[stale?'stale':'missing']};
   const {snowCm,overnightSnowCm,minTempC,maxGustKmh,minVisibilityM,rainMm,overnightRainMm,
@@ -64,8 +78,7 @@ function assessTown(morning, stale) {
   else if (fog || valid(minVisibilityM) && minVisibilityM <= mileM) caution.push('fog');
   if (cold) caution.push(snowCm > 0 || overnightSnowCm > 0 || rainMm > 0 || overnightRainMm > 0 ? 'ice' : 'freezing');
   if (rainMm >= .25*25.4) caution.push('rain');
-  const complete = [snowCm,overnightSnowCm,minTempC,maxGustKmh,minVisibilityM,rainMm,overnightRainMm].every(valid)
-    && [freezingPrecip,fog,snowWeather,thunder].every(value=>typeof value === 'boolean');
+  const complete = completeMorning(morning);
   const minor = complete && !high.length && caution.length===1 && caution[0]==='freezing' && minTempC>=minorDryColdFloorC;
   return {risk:high.length?'high':caution.length?'caution':complete?'low':'unknown',complete,minor,
     reasons:[...high,...caution,...(complete?[]:['missing'])]};
@@ -86,7 +99,9 @@ export function driveOutlook(townSnapshot, alertSnapshot, {now=Date.now(),timeZo
   const basedOn = townSnapshot?.savedAt ?? townSnapshot?.data?.fetchedAt;
   const hasMornings = [...forecasts.values()].some(town=>town.mornings?.length);
   const fetched = Date.parse(basedOn);
-  const stale = !!hasMornings && (!valid(fetched) || fetched > now+5*60_000 || now-fetched>driveForecastMaxAge);
+  const dated = valid(fetched) && fetched <= now+5*60_000;
+  const stale = !!hasMornings && (!dated || now-fetched>driveForecastMaxAge);
+  const retained = townSnapshot?.retained === true && dated && hasMornings;
   const at = localHours(timeZone);
   const today = todayDriveWindow(now,timeZone);
   const days = driveDisplayDates(now,timeZone).map(date=>{
@@ -94,7 +109,7 @@ export function driveOutlook(townSnapshot, alertSnapshot, {now=Date.now(),timeZo
       const forecast = forecasts.get(id);
       const morning = forecast?.mornings?.find(item=>item.date===date) ?? null;
       const {source,sourceUrl,updatedAt,fetchedAt} = forecast ?? {};
-      return {id,name,morning,source,sourceUrl,updatedAt,fetchedAt,...assessTown(morning,stale)};
+      return {id,name,morning,source,sourceUrl,updatedAt,fetchedAt,...assessTown(morning,stale && !retained)};
     });
     const alerts = morningAlerts(alertSnapshot,at(date,'05'),at(date,'09'));
     const warning = alerts.some(alert=>/\bwarning\b/i.test(alert.title));
@@ -106,7 +121,8 @@ export function driveOutlook(townSnapshot, alertSnapshot, {now=Date.now(),timeZo
     const minorNote = risk==='low' && minorCount>0 ? 'isolatedMinor'
       : risk==='caution' && minorCount>minorPointLimit && !materialCaution && !alerts.length ? 'severalMinor' : null;
     const reasons = [warning?'weatherWarning':alerts.length?'weatherAdvisory':null,stale?'stale':complete?null:'missing',minorNote].filter(Boolean);
-    return {date,risk,complete,towns,alerts,reasons};
+    const alertRisk = warning?'high':alerts.length?'caution':null;
+    return {date,risk,complete,towns,alerts,reasons,alertRisk};
   });
-  return {days,stale,basedOn,today};
+  return {days,stale,retained,basedOn,today,retryAt:townSnapshot?.retryAt,refreshFailed:!!townSnapshot?.error};
 }

@@ -779,7 +779,7 @@ async function nwsTown(place, calendar) {
     updatedAt: official.updatedAt, fetchedAt: official.fetchedAt};
 }
 
-export async function townsWeather(places, timeZone = 'America/Los_Angeles') {
+export async function townsWeather(places, timeZone = 'America/Los_Angeles', {nwsFallback = true} = {}) {
   const calendar = townCalendar(timeZone);
   const warnings = [];
   const valid = places.filter(pointOk);
@@ -807,6 +807,10 @@ export async function townsWeather(places, timeZone = 'America/Los_Angeles') {
     if (limited) throw limited.reason;
     const missing = valid.filter(place => !forecasts.get(place));
     if (missing.length) {
+      if (!nwsFallback) {
+        const failed = results.find(result => result.status === 'rejected');
+        throw failed?.reason ?? new Error('Open-Meteo route forecast is incomplete.');
+      }
       const resolved = await Promise.allSettled(missing.map(place => nwsTown(place, calendar)));
       resolved.forEach((value, i) => forecasts.set(missing[i], fulfilled(value)));
       if (resolved.some(value => fulfilled(value))) warnings.push('部分或全部地点使用 NWS 网格预报。');
@@ -817,6 +821,7 @@ export async function townsWeather(places, timeZone = 'America/Los_Angeles') {
     source: null, sourceUrl: null, updatedAt: null, fetchedAt: null});
   const unavailable = towns.filter(town => !town.source).map(town => town.name);
   if (unavailable.length) warnings.push(`暂无预报：${unavailable.join('、')}`);
-  return {towns, period: {startHour: 7, endHour: 19, timeZone}, fetchedAt: iso(Date.now()),
+  const primaryAvailable = towns.length > 0 && towns.every(town => town.source === 'Open-Meteo');
+  return {towns, primaryAvailable, period: {startHour: 7, endHour: 19, timeZone}, fetchedAt: iso(Date.now()),
     updatedAt: towns.map(town => town.updatedAt).filter(Boolean).sort().at(-1) ?? null, warnings};
 }
