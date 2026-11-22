@@ -90,7 +90,11 @@ export function renderRouteTowns(snapshot, {language='zh', imperial=false, timeZ
       const title = day.sourceText ? ` title="${h(day.sourceText)}"` : '';
       const high = quant(day.high,'temp',imperial,language,true);
       const low = quant(day.low,'temp',imperial,language,true);
-      return `<td${title}${boundary}>${symbol}${h(condition)}${hasTemperature?`<small>${h(high)} / ${h(low)}</small>`:''}</td>`;
+      const provider = day.source==='Visual Crossing Weather' ? sourceLink('Visual Crossing Weather','https://www.visualcrossing.com/')
+        : day.source==='NWS 网格预报' ? sourceLink('NWS',day.sourceUrl) : day.source ? sourceLink(day.source,day.sourceUrl) : '';
+      const savedLabel = day.retained ? `${tr('已保存','Saved')} · ` : '';
+      const asOf = sourceTime(day.updatedAt ?? day.fetchedAt);
+      return `<td${title}${boundary}>${symbol}${h(condition)}${hasTemperature?`<small>${h(high)} / ${h(low)}</small>`:''}${provider?`<small>${savedLabel}${provider}${asOf?` · ${asOf}`:''}</small>`:''}</td>`;
     }).join('');
     return `<tr><th scope="row">${h(name)}</th>${cells}</tr>`;
   }).join('');

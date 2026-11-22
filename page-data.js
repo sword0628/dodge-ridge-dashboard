@@ -1,11 +1,12 @@
 import {profile,points} from './itinerary.js';
 import {reverseSegments} from './return-route.js';
 import {routeTowns} from './route-towns.js';
-import {weather,roads,routeWeather,townsWeather} from './sources.js?v=13';
+import {weather,roads,routeWeather,townsWeather,townsFallbackWeather} from './sources.js?v=14';
 import {MIN,HOUR,fresh,tripVerdict} from './logic.js?v=6';
 import {chpSegments,chpSnapshot,refreshChpSnapshot,segmentKey} from './chp-snapshot.js';
-import {driveDisplayDates,driveForecastMaxAge,hasCompleteDriveDate,upcomingDriveDates} from './drive-weather.js?v=13';
+import {driveDisplayDates,driveForecastMaxAge,hasCompleteDriveDate,upcomingDriveDates} from './drive-weather.js?v=14';
 import {forecastLength} from './forecast.js?v=10';
+import {townSnapshotView} from './town-snapshot.js?v=14';
 
 const localKey='dodge-ridge-public-snapshots-v2';
 const route={segments:profile.segments,timeZone:profile.timeZone};
@@ -42,12 +43,6 @@ async function publicRoads(roadRoute, feedCache){
   return {...result,segments:result.segments.map(p=>({...p,cameras:p.cameras.map(({url,...c})=>({...c,officialUrl:cameraPage(c)}))}))};
 }
 
-async function forecastTowns(nwsFallback){
-  const result=await townsWeather(places,profile.timeZone,{nwsFallback});
-  if(!result.towns.some(t=>t.source))throw new Error('沿途城镇预报暂无数据。');
-  return result;
-}
-
 function hasPrimaryTownForecast(data){
   return data?.primaryAvailable ?? (data?.towns?.length>0 && data.towns.every(town=>town.source==='Open-Meteo'));
 }
@@ -72,22 +67,48 @@ function fetchFailure(previous,error){
   return {error:'本次抓取失败。',attempts,retryAt:new Date(Date.now()+delay).toISOString()};
 }
 
+async function updateTowns(now){
+  const previous=snapshots.towns;
+  if (!(now<Date.parse(previous?.retryAt))) {
+    const dates=driveDisplayDates(now,profile.timeZone);
+    const retained=hasCompleteDriveDate(previous?.data,places,dates);
+    try {
+      const data=await townsWeather(places,profile.timeZone);
+      if (!hasPrimaryTownForecast(data) || retained&&!hasCompleteDriveDate(data,places,dates)) {
+        throw new Error('Open-Meteo route forecast is incomplete.');
+      }
+      snapshots.towns={savedAt:data.fetchedAt,data};
+      return true;
+    } catch(error) {
+      snapshots.towns={...previous,...fetchFailure(previous,error),retained};
+    }
+  }
+  const current=snapshots.towns;
+  if (now<Date.parse(current?.fallbackRetryAt)) return false;
+  const allowVisual=!(now<Date.parse(current?.visualRetryAt));
+  const {visualTowns,nwsTowns,visualRetryAt,period}=await townsFallbackWeather(places,profile.timeZone,{allowVisual});
+  const anyBackup=visualTowns.length>0 || nwsTowns.length>0;
+  const old=current?.fallback;
+  snapshots.towns={...current,
+    fallbackRetryAt:new Date(Date.now()+(visualTowns.length || !allowVisual?HOUR:15*MIN)).toISOString(),
+    visualRetryAt:visualRetryAt>Date.now()?new Date(visualRetryAt).toISOString():allowVisual?undefined:current?.visualRetryAt,
+    fallback:anyBackup?{period,savedAt:new Date().toISOString(),
+      visualTowns:visualTowns.length?visualTowns:old?.visualTowns ?? [],
+      nwsTowns:nwsTowns.length?nwsTowns:old?.nwsTowns ?? []}:old,
+  };
+  return false;
+}
+
 async function updateSnapshot(key,now,feedCache){
+  if(key==='towns')return updateTowns(now);
   const previous=snapshots[key];
   if(now<Date.parse(previous?.retryAt))return false;
-  const driveDates=key==='towns'?driveDisplayDates(now,profile.timeZone):[];
-  const retainTowns=hasCompleteDriveDate(previous?.data,places,driveDates);
   try {
-    const data=key==='towns'?await forecastTowns(!retainTowns):await loaders[key](feedCache);
-    if(retainTowns && !hasCompleteDriveDate(data,places,driveDates))throw new Error('Open-Meteo route forecast has no complete morning.');
-    if(key==='towns' && !hasPrimaryTownForecast(data)){
-      snapshots[key]={savedAt:data.fetchedAt,data,...fetchFailure(previous)};
-      return false;
-    }
+    const data=await loaders[key](feedCache);
     snapshots[key]={savedAt:new Date().toISOString(),data};
     return true;
   } catch(error){
-    snapshots[key]={...previous,...fetchFailure(previous,error),...(retainTowns?{retained:true}:{})};
+    snapshots[key]={...previous,...fetchFailure(previous,error)};
     return false;
   }
 }
@@ -103,10 +124,10 @@ export function loadDashboard(){
   const road=view('roads');
   const returnRoad=view('returnRoads');
   const routeForecast=view('routeWeather');
-  const forecasts=view('towns');
+  const now=Date.now();
+  const forecasts=townSnapshotView(view('towns'),places,now);
   const base=view('base');
   const summit=view('summit');
-  const now=Date.now();
   const chp=chpSnapshot(now);
   const chpByRoute=new Map(chpSegments(chp,false).map(segment=>[segmentKey(segment),segment]));
   const outboundChp=!chp.stale&&profile.segments.every(segment=>chpByRoute.has(segmentKey(segment))) ? [...chpByRoute.values()] : null;

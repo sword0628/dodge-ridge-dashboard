@@ -6,6 +6,7 @@ const mileM = 1609.344;
 const mphKmh = 1.609344;
 const minorDryColdFloorC = -2;
 const minorPointLimit = 2;
+const riskRank = {unknown:0,low:1,caution:2,high:3};
 export const driveForecastMaxAge = 6 * hour;
 
 function localHours(timeZone) {
@@ -45,7 +46,7 @@ export function driveDisplayDates(now, timeZone) {
   return upcoming[0]===today ? upcoming : [today,...upcoming];
 }
 
-function completeMorning(morning) {
+export function completeMorning(morning) {
   if (!morning) return false;
   const {snowCm,overnightSnowCm,minTempC,maxGustKmh,minVisibilityM,rainMm,overnightRainMm,
     freezingPrecip,fog,snowWeather,thunder} = morning;
@@ -93,36 +94,53 @@ function morningAlerts(alertSnapshot, start, end) {
   });
 }
 
+function isCurrent(value,now) {
+  const time = Date.parse(value);
+  return valid(time) && time<=now+5*60_000 && now-time<=driveForecastMaxAge;
+}
+
+function routeRisk(towns,alertRisk) {
+  const complete = towns.length>0 && towns.every(town=>town.complete);
+  const minorCount = towns.filter(town=>town.minor).length;
+  const materialCaution = towns.some(town=>town.risk==='caution' && !town.minor);
+  const risk = alertRisk==='high' || towns.some(town=>town.risk==='high') ? 'high'
+    : alertRisk || materialCaution || minorCount>minorPointLimit ? 'caution' : complete ? 'low' : 'unknown';
+  return {risk,complete,minorCount,materialCaution};
+}
+
 export function driveOutlook(townSnapshot, alertSnapshot, {now=Date.now(),timeZone='America/Los_Angeles'}={}) {
   const forecasts = new Map((townSnapshot?.data?.towns ?? []).map(town=>[town.id,town]));
   const places = townSnapshot?.places?.length ? townSnapshot.places : [...forecasts.values()];
   const basedOn = townSnapshot?.savedAt ?? townSnapshot?.data?.fetchedAt;
-  const hasMornings = [...forecasts.values()].some(town=>town.mornings?.length);
-  const fetched = Date.parse(basedOn);
-  const dated = valid(fetched) && fetched <= now+5*60_000;
-  const stale = !!hasMornings && (!dated || now-fetched>driveForecastMaxAge);
-  const retained = townSnapshot?.retained === true && dated && hasMornings;
   const at = localHours(timeZone);
   const today = todayDriveWindow(now,timeZone);
   const days = driveDisplayDates(now,timeZone).map(date=>{
     const towns = places.map(({id,name})=>{
       const forecast = forecasts.get(id);
       const morning = forecast?.mornings?.find(item=>item.date===date) ?? null;
-      const {source,sourceUrl,updatedAt,fetchedAt} = forecast ?? {};
-      return {id,name,morning,source,sourceUrl,updatedAt,fetchedAt,...assessTown(morning,stale && !retained)};
+      const {source,sourceUrl,updatedAt,fetchedAt} = morning?.source ? morning : forecast ?? {};
+      const stamp = fetchedAt ?? basedOn;
+      const retained = morning?.retained ?? townSnapshot?.retained===true;
+      const stale = !!morning && !isCurrent(stamp,now);
+      const assessment = assessTown(morning,stale && !retained);
+      const supplement = morning?.supplement;
+      const backupAssessment = supplement && isCurrent(supplement.fetchedAt,now) ? assessTown(supplement,false) : null;
+      const current = backupAssessment && (stale || riskRank[backupAssessment.risk]>riskRank[assessment.risk])
+        ? backupAssessment : stale ? null : assessment;
+      return {id,name,morning,source,sourceUrl,updatedAt,fetchedAt:stamp,stale,retained,current,...assessment};
     });
     const alerts = morningAlerts(alertSnapshot,at(date,'05'),at(date,'09'));
     const warning = alerts.some(alert=>/\bwarning\b/i.test(alert.title));
-    const complete = towns.length>0 && towns.every(town=>town.complete);
-    const minorCount = towns.filter(town=>town.minor).length;
-    const materialCaution = towns.some(town=>town.risk==='caution' && !town.minor);
-    const risk = warning || towns.some(town=>town.risk==='high') ? 'high'
-      : alerts.length || materialCaution || minorCount>minorPointLimit ? 'caution' : complete ? 'low' : 'unknown';
+    const alertRisk = warning?'high':alerts.length?'caution':null;
+    const {risk,complete,minorCount,materialCaution} = routeRisk(towns,alertRisk);
+    const currentRisk = routeRisk(towns.map(town=>town.current ?? {}),alertRisk).risk;
+    const displayedRisk = riskRank[currentRisk]>riskRank[risk] ? currentRisk : risk;
     const minorNote = risk==='low' && minorCount>0 ? 'isolatedMinor'
       : risk==='caution' && minorCount>minorPointLimit && !materialCaution && !alerts.length ? 'severalMinor' : null;
-    const reasons = [warning?'weatherWarning':alerts.length?'weatherAdvisory':null,stale?'stale':complete?null:'missing',minorNote].filter(Boolean);
-    const alertRisk = warning?'high':alerts.length?'caution':null;
-    return {date,risk,complete,towns,alerts,reasons,alertRisk};
+    const stale = towns.some(town=>town.stale);
+    const reasons = [warning?'weatherWarning':alerts.length?'weatherAdvisory':null,stale?'stale':null,complete?null:'missing',minorNote].filter(Boolean);
+    return {date,risk:displayedRisk,complete,towns,alerts,reasons,stale,currentRisk};
   });
-  return {days,stale,retained,basedOn,today,retryAt:townSnapshot?.retryAt,refreshFailed:!!townSnapshot?.error};
+  return {days,stale:days.some(day=>day.stale),retained:townSnapshot?.retained===true,basedOn,today,
+    retryAt:townSnapshot?.retryAt,refreshFailed:!!townSnapshot?.error};
 }

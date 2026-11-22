@@ -1,3 +1,5 @@
+import {visualCrossingTowns} from './visual-crossing.js?v=14';
+
 const OPEN_METEO = 'https://open-meteo.com/en/docs';
 const NWS = 'https://www.weather.gov/documentation/services-web-api';
 const QUICKMAP = 'https://quickmap.dot.ca.gov/';
@@ -754,6 +756,7 @@ async function nwsTown(place, calendar) {
   const gustLayer = official.data.windGust;
   const gustFactor = /:km_h-1$/.test(gustLayer?.uom) ? 1 : /:m_s-1$/.test(gustLayer?.uom) ? 3.6 : null;
   const gusts = gustFactor === null ? [] : gridIntervals(gustLayer);
+  const visibility = /:m$/.test(official.data.visibility?.uom) ? gridIntervals(official.data.visibility) : [];
   const snowLayer = official.data.snowfallAmount;
   const snowUnit = /:(mm|cm|m)$/.exec(snowLayer?.uom)?.[1];
   const snowFactor = {mm: 0.1, cm: 1, m: 100}[snowUnit];
@@ -766,6 +769,7 @@ async function nwsTown(place, calendar) {
     const peak = completeAggregate(atHours(gusts, morning.hours), maximum);
     return townMorning(morning, {
       minTempC: completeAggregate(atHours(temperature, morning.hours), minimum), maxGustKmh: peak === null ? null : peak * gustFactor,
+      minVisibilityM: completeAggregate(atHours(visibility, morning.hours), minimum),
       freezingPrecip: weatherFlag(conditions.some(row => row.freezingPrecip), completeWeather),
       fog: weatherFlag(conditions.some(row => row.condition === 'fog'), completeWeather),
       snowWeather: weatherFlag(conditions.some(row => row.condition === 'snow'), completeWeather),
@@ -779,7 +783,7 @@ async function nwsTown(place, calendar) {
     updatedAt: official.updatedAt, fetchedAt: official.fetchedAt};
 }
 
-export async function townsWeather(places, timeZone = 'America/Los_Angeles', {nwsFallback = true} = {}) {
+export async function townsWeather(places, timeZone = 'America/Los_Angeles') {
   const calendar = townCalendar(timeZone);
   const warnings = [];
   const valid = places.filter(pointOk);
@@ -806,15 +810,8 @@ export async function townsWeather(places, timeZone = 'America/Los_Angeles', {nw
     const limited = results.find(result => result.status === 'rejected' && result.reason?.status === 429);
     if (limited) throw limited.reason;
     const missing = valid.filter(place => !forecasts.get(place));
-    if (missing.length) {
-      if (!nwsFallback) {
-        const failed = results.find(result => result.status === 'rejected');
-        throw failed?.reason ?? new Error('Open-Meteo route forecast is incomplete.');
-      }
-      const resolved = await Promise.allSettled(missing.map(place => nwsTown(place, calendar)));
-      resolved.forEach((value, i) => forecasts.set(missing[i], fulfilled(value)));
-      if (resolved.some(value => fulfilled(value))) warnings.push('部分或全部地点使用 NWS 网格预报。');
-    }
+    if (missing.length) throw results.find(result => result.status === 'rejected')?.reason
+      ?? new Error('Open-Meteo route forecast is incomplete.');
   }
   const towns = places.map(place => forecasts.get(place) ?? {id: place.id, name: place.name,
     days: calendar.days.map(day => townDay(day, [], {condition: 'unknown'})), mornings: calendar.mornings.map(morning => townMorning(morning)),
@@ -824,4 +821,17 @@ export async function townsWeather(places, timeZone = 'America/Los_Angeles', {nw
   const primaryAvailable = towns.length > 0 && towns.every(town => town.source === 'Open-Meteo');
   return {towns, primaryAvailable, period: {startHour: 7, endHour: 19, timeZone}, fetchedAt: iso(Date.now()),
     updatedAt: towns.map(town => town.updatedAt).filter(Boolean).sort().at(-1) ?? null, warnings};
+}
+
+export async function townsFallbackWeather(places, timeZone, {allowVisual = true} = {}) {
+  const calendar = townCalendar(timeZone);
+  const valid = places.filter(pointOk);
+  const [visual, nws] = await Promise.allSettled([
+    allowVisual?visualCrossingTowns([...valid].reverse(),calendar,timeZone,openMeteoTown):null,
+    Promise.allSettled(valid.map(place=>nwsTown(place,calendar))),
+  ]);
+  const backup = fulfilled(visual);
+  const visualTowns = [...(backup?.forecasts.values() ?? [])];
+  const nwsTowns = (fulfilled(nws) ?? []).map(fulfilled).filter(Boolean);
+  return {visualTowns,nwsTowns,visualRetryAt:backup?.retryAt,period:{startHour:7,endHour:19,timeZone}};
 }

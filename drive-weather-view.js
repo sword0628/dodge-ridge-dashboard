@@ -1,5 +1,5 @@
 import {quant} from './forecast.js?v=10';
-import {driveDisplayDates, todayDriveWindow, upcomingDriveDates} from './drive-weather.js?v=13';
+import {driveDisplayDates, driveForecastMaxAge, todayDriveWindow, upcomingDriveDates} from './drive-weather.js?v=14';
 import {roadEventText} from './road-locale.js';
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({
@@ -60,13 +60,12 @@ export function renderDriveWeather(outlook, {language='zh', imperial=false, sele
     severalMinor:tr('至少 3 个干冷点位有轻微提醒','Minor concerns at 3 or more dry, cold points'),
   };
   const riskKey = key => Object.hasOwn(risk,key) ? key : 'unknown';
-  const oldForecast = outlook?.retained && outlook.stale;
-  const tone = (key,alertRisk) => riskKey(oldForecast?alertRisk:key);
-  const label = (key,alertRisk,minor=false) => {
+  const tone = (key,old,current) => riskKey(old?current:key);
+  const label = (key,old,current,minor=false) => {
     const text = minor&&key==='caution'?tr('轻微提醒','Minor concern'):risk[riskKey(key)];
-    return oldForecast&&key!=='unknown'&&alertRisk!==key ? `${tr('旧预报','Stale')} · ${text}` : text;
+    return old&&key!=='unknown'&&current!==key ? `${tr('旧预报','Stale')} · ${text}` : text;
   };
-  const tag = (key,alertRisk,minor=false) => `<span class="drive-risk" data-risk="${tone(key,alertRisk)}">${label(key,alertRisk,minor)}</span>`;
+  const tag = (key,old,current,minor=false) => `<span class="drive-risk" data-risk="${tone(key,old,current)}">${label(key,old,current,minor)}</span>`;
   const reports = new Map((outlook?.days ?? []).map(day=>[day.date,day]));
   const parsedNow = new Date(now).valueOf();
   const instant = Number.isFinite(parsedNow)?parsedNow:Date.now();
@@ -91,38 +90,63 @@ export function renderDriveWeather(outlook, {language='zh', imperial=false, sele
     const parsed = new Date(value);
     return `<time datetime="${parsed.toISOString()}">${escapeHtml(formatter.format(parsed))}</time>`;
   };
-  const basis = time(outlook?.basedOn);
   const nextRetry = Date.parse(outlook?.retryAt)>instant ? time(outlook.retryAt) : '';
-  const cacheNotice = outlook?.retained ? tr('Open-Meteo 更新失败，沿用上次完整预报。','Open-Meteo refresh failed. Showing the last complete forecast.')
-    : outlook?.refreshFailed ? tr('Open-Meteo 更新失败，显示目前能取得的预报。','Open-Meteo refresh failed. Showing available forecast data.') : '';
-  const status = [cacheNotice,basis?`${tr('预报采集于','Forecast collected')} ${basis}`:'',
-    cacheNotice ? nextRetry?`${tr('可重试时间','Retry after')} ${nextRetry}`:tr('可点「刷新」重试','Tap Refresh to try again'):''].filter(Boolean).join(' · ');
+  const cacheNotice = outlook?.refreshFailed
+    ? tr('Open-Meteo 更新失败，显示可用的备用预报和已保存数据。','Open-Meteo refresh failed. Showing available backup and saved forecasts.') : '';
+  const status = [cacheNotice,cacheNotice ? nextRetry?`${tr('可重试时间','Retry after')} ${nextRetry}`
+    :tr('可点「刷新」重试','Tap Refresh to try again'):''].filter(Boolean).join(' · ');
   const reasonText = values => [...new Set((values ?? []).map(value=>Object.hasOwn(reasonLabels,value)?reasonLabels[value]:value).filter(Boolean))].map(escapeHtml).join(' · ');
   const snow = value => escapeHtml(quant(value,'snow',true,language,true));
   const temp = value => escapeHtml(quant(value,'temp',imperial,language,true));
+  const provider = (name,url) => name==='Visual Crossing Weather'
+    ? officialLink(name,'https://www.visualcrossing.com/') : officialLink(name,url);
+  const provenance = (row,old) => [
+    row.source?provider(row.source,row.sourceUrl):'',old?tr('旧预报','Stale forecast'):'',
+    time(row.updatedAt)?`${tr('来源更新','Source updated')} ${time(row.updatedAt)}`:'',
+    time(row.fetchedAt)?`${tr('采集于','Collected')} ${time(row.fetchedAt)}`:'',
+  ].filter(Boolean).join(' · ');
+  const sourceLine = day => {
+    const groups = new Map();
+    for (const town of day.towns ?? []) {
+      if (!town.morning) continue;
+      for (const row of [town,town.morning.supplement]) {
+        if (!row?.source) continue;
+        const old = instant-Date.parse(row.fetchedAt)>driveForecastMaxAge;
+        const key = `${row.source}/${old}`;
+        const prior = groups.get(key);
+        if (!prior || (row.fetchedAt ?? '')>(prior.row.fetchedAt ?? '')) groups.set(key,{row,old});
+      }
+    }
+    return [...groups.values()].map(({row,old})=>provenance(row,old)).join(' / ');
+  };
   const dates = days.map(day=>{
     const stamp = fromDate(day.date);
     const active = day.date===selected.date;
     const isToday = day.date===today.date;
-    return `<button type="button" data-drive-day="${day.date}"${isToday?' aria-current="date"':''}${extendedDates.has(day.date)?' data-horizon="extended" aria-describedby="drive-weather-horizon"':''} aria-pressed="${active}" aria-controls="drive-weather-status drive-weather-details"><span>${isToday?tr('今天','Today'):escapeHtml(weekday.format(stamp))}</span><time datetime="${day.date}">${escapeHtml(shortDate.format(stamp))}</time>${tag(day.risk,day.alertRisk)}</button>`;
+    return `<button type="button" data-drive-day="${day.date}"${isToday?' aria-current="date"':''}${extendedDates.has(day.date)?' data-horizon="extended" aria-describedby="drive-weather-horizon"':''} aria-pressed="${active}" aria-controls="drive-weather-status drive-weather-details"><span>${isToday?tr('今天','Today'):escapeHtml(weekday.format(stamp))}</span><time datetime="${day.date}">${escapeHtml(shortDate.format(stamp))}</time>${tag(day.risk,day.stale,day.currentRisk)}</button>`;
   }).join('');
 
+  const metrics = morning => `<dl class="drive-weather-metrics"><div><dt>${tr('清晨降雪','Early snow')}</dt><dd>${snow(morning.snowCm)}</dd></div><div><dt>${tr('前一夜降雪','Overnight snow')}</dt><dd>${snow(morning.overnightSnowCm)}</dd></div><div><dt>${tr('清晨最低气温','Morning low')}</dt><dd>${temp(morning.minTempC)}</dd></div></dl>`;
+  const originalSnow = row => {
+    const valid = (row?.nwsSnowPeriods ?? []).filter(period=>Number.isFinite(period.snowCm)&&Number.isFinite(Date.parse(period.startAt))&&Number.isFinite(Date.parse(period.endAt)));
+    const periods = valid.map(period=>`<li>${time(period.startAt,periodStamp)} – ${time(period.endAt,periodStamp)} · ${snow(period.snowCm)}</li>`).join('');
+    return periods?`<details class="drive-weather-nws-periods"><summary>${tr('NWS 原始 6 小时时段降雪','NWS original 6-hour snowfall periods')}</summary><ul>${periods}</ul></details>`:'';
+  };
   const towns = (selected.towns ?? []).map(town=>{
-    const key = riskKey(town.risk);
+    const key = riskKey((town.current?.risk==='high' || town.risk==='low' && town.current?.risk==='caution') ? town.current.risk : town.risk);
     const morning = town.morning;
     const reasons = reasonText(town.reasons);
-    const updated = time(town.updatedAt);
-    const fetched = time(town.fetchedAt);
-    const originalPeriods = (morning?.nwsSnowPeriods ?? []).filter(period=>Number.isFinite(period.snowCm)&&Number.isFinite(Date.parse(period.startAt))&&Number.isFinite(Date.parse(period.endAt)));
-    const periods = originalPeriods.map(period=>`<li>${time(period.startAt,periodStamp)} – ${time(period.endAt,periodStamp)} · ${snow(period.snowCm)}</li>`).join('');
-    const source = [town.source || town.sourceUrl ? officialLink(town.source || tr('原始预报','Original forecast'),town.sourceUrl) : '',
-      updated ? `${tr('来源更新','Source updated')} ${updated}` : '', fetched && fetched!==updated ? `${tr('采集','Collected')} ${fetched}` : ''].filter(Boolean).join(' · ');
-    return `<li class="drive-weather-town" data-risk="${tone(key)}">
-      <div class="drive-weather-town-head"><strong>${escapeHtml(town.name)}</strong>${tag(key,null,town.minor===true)}</div>
-      ${morning?`<dl class="drive-weather-metrics"><div><dt>${tr('清晨降雪','Early snow')}</dt><dd>${snow(morning.snowCm)}</dd></div><div><dt>${tr('前一夜降雪','Overnight snow')}</dt><dd>${snow(morning.overnightSnowCm)}</dd></div><div><dt>${tr('清晨最低气温','Morning low')}</dt><dd>${temp(morning.minTempC)}</dd></div></dl>`:`<p class="muted">${tr('暂无这两个时段的逐小时预报。','Hourly forecasts for these periods are unavailable.')}</p>`}
+    const mainSource = morning?provenance(town,town.stale):'';
+    const supplement = morning?.supplement;
+    const supplemental = supplement?`<div class="drive-weather-supplement"><p class="muted drive-weather-source">${provenance(supplement,instant-Date.parse(supplement.fetchedAt)>driveForecastMaxAge)}</p>${metrics(supplement)}${originalSnow(supplement)}</div>`:'';
+    return `<li class="drive-weather-town" data-risk="${tone(key,town.stale,town.current?.risk)}">
+      <div class="drive-weather-town-head"><strong>${escapeHtml(town.name)}</strong>${tag(key,town.stale,town.current?.risk,town.minor===true)}</div>
+      ${supplemental}
+      ${mainSource?`<p class="muted drive-weather-source">${mainSource}</p>`:''}
+      ${morning?metrics(morning):`<p class="muted">${tr('暂无这两个时段的逐小时预报。','Hourly forecasts for these periods are unavailable.')}</p>`}
       ${morning&&town.complete===false&&!town.reasons?.includes('missing')?`<p class="muted">${tr('部分时段资料不完整。','Some hours have incomplete data.')}</p>`:''}
-      ${periods?`<details class="drive-weather-nws-periods"><summary>${tr('NWS 原始 6 小时时段降雪','NWS original 6-hour snowfall periods')}</summary><ul>${periods}</ul></details>`:''}
-      ${reasons?`<p class="drive-weather-reasons">${reasons}</p>`:''}${source?`<p class="muted drive-weather-source">${source}</p>`:''}
+      ${originalSnow(morning)}
+      ${reasons?`<p class="drive-weather-reasons">${reasons}</p>`:''}
     </li>`;
   }).join('');
   const alerts = (selected.alerts ?? []).map(alert=>{
@@ -135,9 +159,12 @@ export function renderDriveWeather(outlook, {language='zh', imperial=false, sele
   }).join('');
   const chosen = fromDate(selected.date);
   const dayReason = reasonText(selected.reasons);
+  const todaySources = sourceLine(today);
+  const selectedSources = sourceLine(selected);
   const focus = day => {
-    const concerned = (day.towns ?? []).filter(town=>town.risk==='high'||town.risk==='caution')
-      .sort((a,b)=>Number(b.risk==='high')-Number(a.risk==='high') || (b.morning?.snowCm ?? 0)-(a.morning?.snowCm ?? 0));
+    const high = town => town.current?.risk==='high' || town.risk==='high';
+    const concerned = (day.towns ?? []).filter(town=>high(town)||town.current?.risk==='caution'||town.risk==='caution')
+      .sort((a,b)=>Number(high(b))-Number(high(a)) || (b.morning?.snowCm ?? 0)-(a.morning?.snowCm ?? 0));
     const names = concerned.slice(0,3).map(town=>escapeHtml(town.name)).join(tr('、',', '));
     const extra = concerned.length>3 ? tr(`等 ${concerned.length} 个点位`,` and ${concerned.length-3} more`) : '';
     return names?`<p class="drive-weather-focus"><strong>${tr('重点留意','Points to watch')}</strong> · ${names}${extra}</p>`:'';
@@ -148,16 +175,18 @@ export function renderDriveWeather(outlook, {language='zh', imperial=false, sele
   const title = reflectingToday ? tr('今日 05:00–09:00 预报','Today’s 05:00–09:00 forecast') : tr('05:00 出发','05:00 departure');
   const heading = started ? tr(`早晨驾驶展望 · 今天及未来 ${upcoming.length} 天`,`Morning driving outlook · today and the next ${upcoming.length} days`) : tr(`早晨驾驶展望 · ${upcoming.length} 天`,`Morning driving outlook · ${upcoming.length} days`);
   return `<section class="panel drive-weather drive-weather-today" aria-labelledby="drive-weather-today-heading">
-    <div class="drive-weather-selected" data-risk="${tone(today.risk,today.alertRisk)}"><h3 id="drive-weather-today-heading">${todayTitle} · ${label(today.risk,today.alertRisk)}</h3><p><time datetime="${today.date}">${escapeHtml(shortDate.format(fromDate(today.date)))}</time><span>05:00–09:00</span>${todayStatus?` <span class="drive-weather-long-range">${todayStatus}</span>`:''}</p></div>
+    <div class="drive-weather-selected" data-risk="${tone(today.risk,today.stale,today.currentRisk)}"><h3 id="drive-weather-today-heading">${todayTitle} · ${label(today.risk,today.stale,today.currentRisk)}</h3><p><time datetime="${today.date}">${escapeHtml(shortDate.format(fromDate(today.date)))}</time><span>05:00–09:00</span>${todayStatus?` <span class="drive-weather-long-range">${todayStatus}</span>`:''}</p></div>
     ${status?`<p class="muted drive-weather-source">${status}</p>`:''}
+    ${todaySources?`<p class="muted drive-weather-source">${todaySources}</p>`:''}
     <div class="drive-weather-today-summary">${todayReason}<button type="button" data-drive-today="${today.date}" aria-controls="drive-weather-status drive-weather-details">${tr('查看今天详情','See today’s forecast')}</button></div>
   </section>
   <section class="panel drive-weather" aria-labelledby="drive-weather-heading">
-    <header class="drive-weather-head"><div><h3 id="drive-weather-heading">${heading}</h3><p class="muted">${tr('各点统一看加州当地 05:00–09:00，前一夜为 19:00–05:00。','All points use the same California time windows. Morning is 05:00–09:00 and the previous night is 19:00–05:00.')}</p></div>${outlook?.stale?`<span class="badge stale">${tr('旧快照','Stale snapshot')}</span>`:''}</header>
-    <div id="drive-weather-status" class="drive-weather-selected" data-risk="${tone(selected.risk,selected.alertRisk)}" aria-live="polite" tabindex="-1"><h4>${title} · ${label(selected.risk,selected.alertRisk)}</h4><p><time datetime="${selected.date}">${escapeHtml(fullDate.format(chosen))}</time>${extended?` <span class="drive-weather-long-range">${tr('远期展望','Long-range outlook')}</span>`:''}${reflectingToday?` <span class="drive-weather-long-range">${todayStatus}</span>`:''}</p></div>
+    <header class="drive-weather-head"><div><h3 id="drive-weather-heading">${heading}</h3><p class="muted">${tr('各点统一看加州当地 05:00–09:00，前一夜为 19:00–05:00。','All points use the same California time windows. Morning is 05:00–09:00 and the previous night is 19:00–05:00.')}</p></div>${selected.stale?`<span class="badge stale">${tr('旧快照','Stale snapshot')}</span>`:''}</header>
+    <div id="drive-weather-status" class="drive-weather-selected" data-risk="${tone(selected.risk,selected.stale,selected.currentRisk)}" aria-live="polite" tabindex="-1"><h4>${title} · ${label(selected.risk,selected.stale,selected.currentRisk)}</h4><p><time datetime="${selected.date}">${escapeHtml(fullDate.format(chosen))}</time>${extended?` <span class="drive-weather-long-range">${tr('远期展望','Long-range outlook')}</span>`:''}${reflectingToday?` <span class="drive-weather-long-range">${todayStatus}</span>`:''}</p></div>
     <div class="drive-weather-dates" role="group" aria-label="${tr('选择出发日期','Choose a departure date')}">${dates}</div>
     ${extendedDates.size?`<p id="drive-weather-horizon" class="muted drive-weather-source">${tr(`虚线日期为未来第 8–${upcoming.length} 天，预报变数较大。`,`Dashed dates are days 8–${upcoming.length} of the upcoming period. These forecasts are more uncertain.`)}</p>`:''}
     <div id="drive-weather-details" class="drive-weather-details">
+      ${selectedSources?`<p class="muted drive-weather-source">${selectedSources}</p>`:''}
       ${focus(selected)}
       ${dayReason?`<p class="drive-weather-reasons">${dayReason}</p>`:''}
       ${!selected.complete&&towns?`<p class="muted">${tr('部分点位或时段资料不完整。','Some locations or hours have incomplete data.')}</p>`:''}

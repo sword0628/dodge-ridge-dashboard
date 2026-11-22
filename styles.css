@@ -467,6 +467,9 @@ dialog::backdrop { background: rgba(12, 36, 30, .55); }
 .drive-weather-metrics dt { color: var(--muted); font-size: .77rem; line-height: 1.2; }
 .drive-weather-metrics dd { margin: .15rem 0 0; font-size: .87rem; font-weight: 710; }
 .drive-weather-reasons, .drive-weather-source { font-size: .79rem; }
+.drive-weather-supplement {
+  display: grid; gap: .35rem; padding-block-end: .5rem; border-block-end: 1px solid var(--line);
+}
 .drive-weather-focus { font-size: .88rem; }
 .drive-weather-town-list { margin-top: 0; }
 .drive-weather-town-list .drive-weather-towns { margin-top: .55rem; }

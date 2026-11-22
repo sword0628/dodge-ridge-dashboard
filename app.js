@@ -1,12 +1,12 @@
-import {loadDashboard, refreshDashboard, refreshDriveForecast, refreshRoadLayers} from './page-data.js?v=13';
+import {loadDashboard, refreshDashboard, refreshDriveForecast, refreshRoadLayers} from './page-data.js?v=14';
 import {bestSnow, dateKey, forecastLength, localDays, quant, valid} from './forecast.js?v=10';
-import {renderRouteTowns} from './route-towns-view.js?v=10';
+import {renderRouteTowns} from './route-towns-view.js?v=14';
 import {bindRoadMap, roadMap} from './road-map.js?v=7';
 import {roadDirection, roadEventText, roadLocation, roadSource} from './road-locale.js';
 import {reverseSegments} from './return-route.js';
 import {chpSegments,chpSnapshot,segmentKey} from './chp-snapshot.js';
-import {driveForecastMaxAge,driveOutlook,todayDriveWindow} from './drive-weather.js?v=13';
-import {renderDriveWeather} from './drive-weather-view.js?v=13';
+import {driveForecastMaxAge,driveOutlook,todayDriveWindow} from './drive-weather.js?v=14';
+import {renderDriveWeather} from './drive-weather-view.js?v=14';
 
 const $ = id => document.getElementById(id);
 const h = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -359,7 +359,11 @@ function openForecast(date) {
 
 function freshness() {
   const now = Date.now();
-  const driveStale = now - Date.parse(state?.routeTowns?.savedAt) > driveForecastMaxAge;
+  const forecast = state?.routeTowns;
+  const driveStale = [forecast?.savedAt,forecast?.primarySavedAt,
+    ...(forecast?.fallback?.visualTowns ?? []).map(town=>town.fetchedAt),
+    ...(forecast?.fallback?.nwsTowns ?? []).map(town=>town.fetchedAt),
+  ].map(stamp=>now-Date.parse(stamp)>driveForecastMaxAge).join(',');
   const driveRetryWaiting = now < Date.parse(state?.routeTowns?.retryAt);
   const today = location.hash==='#weather' ? todayDriveWindow(now,zone()) : null;
   return [stale(state?.roads,.75),stale(state?.returnRoads,.75),chpSnapshot().stale,driveStale,driveRetryWaiting,today?.date,today?.phase].join('/');
